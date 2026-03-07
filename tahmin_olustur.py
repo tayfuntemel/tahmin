@@ -427,6 +427,3 @@ if __name__ == "__main__":
         predictor.run_predictions(days_ahead=2)  # Bugün + yarın
     finally:
         predictor.close()
-        
-    # Programın sonunda konsol ekranının hemen kapanmasını önlemek için bekleme ekliyoruz:
-    input("\nİşlem tamamlandı. Kapatmak için Enter tuşuna basın...")
