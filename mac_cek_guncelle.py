@@ -402,14 +402,24 @@ def main():
     
     try:
         today = dt.date.today()
-        # Dün, Bugün ve Yarının maçlarını tara
-        for i in [-1, 0, 1]:
-            target_date = today + dt.timedelta(days=i)
-            date_str = target_date.strftime("%Y-%m-%d")
+        # Sadece Dün, Bugün ve Yarın'ın tarihlerini içeren kesin bir liste oluşturuyoruz
+        allowed_dates = [(today + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in [-1, 0, 1]]
+        
+        for date_str in allowed_dates:
             events = sc.by_date(date_str)
             
             p_count = 0
             for ev in events:
+                # 1. KORUMA: Saat farklarından (UTC) dolayı istemediğimiz günlerin (örn: 11'i) sızmasını engelle
+                ts = ev.get("startTimestamp")
+                if ts:
+                    dt_utc = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
+                    match_date_str = dt_utc.strftime("%Y-%m-%d")
+                    
+                    # Eğer maçın tarihi bizim izin verdiğimiz 3 günde yoksa, bu maçı es geç
+                    if match_date_str not in allowed_dates:
+                        continue
+                
                 t_id = ev.get("tournament", {}).get("id")
                 u_id = ev.get("uniqueTournament", {}).get("id")
                 
