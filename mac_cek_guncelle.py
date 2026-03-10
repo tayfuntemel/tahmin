@@ -185,6 +185,8 @@ class Scraper:
             data_text = self.page.evaluate("() => document.body.innerText")
             return json.loads(data_text)
         except Exception as e:
+            # Artık sessiz kalmıyoruz. Eğer SofaScore bizi blokluyorsa bunu konsolda göreceğiz.
+            print(f"[Ağ Hatası] URL çekilirken bir sorun oluştu ({url}): {e}")
             return {}
 
     def get_detailed_stats(self, event_id) -> Dict[str, Any]:
@@ -199,7 +201,7 @@ class Scraper:
             "tackles_h": None, "tackles_a": None
         }
         
-        if "statistics" not in data: 
+        if "statistics" not in data or not data["statistics"]: 
             return res
             
         all_period = data["statistics"][0]
@@ -264,7 +266,6 @@ class Scraper:
         }
         
         def get_decimal_odd(c_dict):
-            """Hem ondalıklı hem kesirli oranı yakalayan esnek çevirici"""
             if c_dict.get("decimalValue"):
                 try: return float(c_dict["decimalValue"])
                 except: pass
@@ -286,7 +287,6 @@ class Scraper:
             choices = m.get("choices", [])
             m_str = json.dumps(m).lower()
             
-            # Full-Time (Maç Sonucu 1X2)
             if "full time" in m_name or "full-time" in m_name or "1x2" in m_name:
                 for c in choices:
                     c_name = str(c.get("name", "")).strip().upper()
@@ -294,7 +294,6 @@ class Scraper:
                     elif c_name == "X": res["odds_x"] = get_decimal_odd(c)
                     elif c_name == "2": res["odds_2"] = get_decimal_odd(c)
             
-            # Double Chance (Çifte Şans)
             elif "double chance" in m_name:
                 for c in choices:
                     c_name = str(c.get("name", "")).strip().upper()
@@ -302,14 +301,12 @@ class Scraper:
                     elif c_name == "12": res["odds_12"] = get_decimal_odd(c)
                     elif c_name == "X2": res["odds_x2"] = get_decimal_odd(c)
             
-            # Both Teams To Score (Karşılıklı Gol)
             elif "both teams to score" in m_name:
                 for c in choices:
                     c_name = str(c.get("name", "")).strip().lower()
                     if c_name == "yes": res["odds_btts_yes"] = get_decimal_odd(c)
                     elif c_name == "no": res["odds_btts_no"] = get_decimal_odd(c)
             
-            # Alt/Üst - İsimde "goals" veya "over/under" geçsin ama ilk yarı vs olmasın
             elif ("goals" in m_name or "over/under" in m_name) and "half" not in m_name and "team" not in m_name and "exact" not in m_name:
                 for c in choices:
                     c_name = str(c.get("name", "")).strip().lower()
@@ -318,24 +315,20 @@ class Scraper:
                     line_found = None
                     baremler = ["0.5", "1.5", "2.5", "3.5", "4.5", "5.5", "6.5", "7.5"]
                     
-                    # 1. Önce doğrudan seçeneğin JSON verisinde arıyoruz
                     for line in baremler:
                         if line in c_str:
                             line_found = line
                             break
                             
-                    # 2. Seçenekte bulamazsak pazarın genel verisinde arıyoruz
                     if not line_found:
                         for line in baremler:
                             if line in m_str:
                                 line_found = line
                                 break
                     
-                    # 3. İkisinde de yazmıyorsa ama bu "isMain" (Ana Barem) ise standart 2.5 kabul ediyoruz
                     if not line_found and m.get("isMain"):
                         line_found = "2.5"
                     
-                    # Barem bulunduysa Over mi Under mi olduğunu saptayıp kaydediyoruz
                     if line_found:
                         val = get_decimal_odd(c)
                         
@@ -402,81 +395,91 @@ def main():
     
     try:
         today = dt.date.today()
-        # Sadece Dün, Bugün ve Yarın'ın tarihlerini içeren kesin bir liste oluşturuyoruz
-        allowed_dates = [(today + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in [-1, 0, 1]]
+        # İSTEK ATILACAK TARİHLER: Dün, Bugün, Yarın
+        target_dates = [(today + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in [-1, 0, 1]]
         
-        for date_str in allowed_dates:
-            events = sc.by_date(date_str)
-            
-            p_count = 0
-            for ev in events:
-                # 1. KORUMA: Saat farklarından (UTC) dolayı istemediğimiz günlerin (örn: 11'i) sızmasını engelle
-                ts = ev.get("startTimestamp")
-                if ts:
-                    dt_utc = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
-                    match_date_str = dt_utc.strftime("%Y-%m-%d")
+        # UTC KORUMASI: Saat farklarından (UTC) sarkan maçların kaybolmasını engellemek için aralığı genişlettik. (-2 ve +2 ekledik)
+        allowed_utc_dates = [(today + dt.timedelta(days=i)).strftime("%Y-%m-%d") for i in [-2, -1, 0, 1, 2]]
+        
+        for date_str in target_dates:
+            try: # Gün bazında hata yönetimi: Bir günde sorun olursa diğer güne devam et!
+                events = sc.by_date(date_str)
+                if not events:
+                    print(f"[UYARI] {date_str} tarihi için API'den hiç maç dönmedi.")
+                    continue
                     
-                    # Eğer maçın tarihi bizim izin verdiğimiz 3 günde yoksa, bu maçı es geç
-                    if match_date_str not in allowed_dates:
-                        continue
+                p_count = 0
+                for ev in events:
+                    try: # Maç bazında hata yönetimi: Bir maçta hata çıkarsa tüm günü çökertmesin!
+                        ts = ev.get("startTimestamp")
+                        if ts:
+                            dt_utc = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
+                            match_date_str = dt_utc.strftime("%Y-%m-%d")
+                            
+                            # UTC tarihi bizim genişletilmiş aralığımızda değilse geç
+                            if match_date_str not in allowed_utc_dates:
+                                continue
+                        
+                        t_id = ev.get("tournament", {}).get("id")
+                        u_id = ev.get("uniqueTournament", {}).get("id")
+                        
+                        if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
+                            ev_id = ev.get("id")
+                            status = (ev.get("status", {}).get("type") or "").lower()
+                            
+                            if status in ["postponed", "canceled"]:
+                                continue
+                            
+                            extra_data = {
+                                "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
+                                "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
+                                "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
+                                "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
+                                "tackles_h": None, "tackles_a": None,
+                                "referee": None,
+                                "formation_h": None, "formation_a": None,
+                                "odds_1": None, "odds_x": None, "odds_2": None,
+                                "odds_1x": None, "odds_12": None, "odds_x2": None,
+                                "odds_btts_yes": None, "odds_btts_no": None,
+                                "odds_o05": None, "odds_u05": None,
+                                "odds_o15": None, "odds_u15": None,
+                                "odds_o25": None, "odds_u25": None,
+                                "odds_o35": None, "odds_u35": None,
+                                "odds_o45": None, "odds_u45": None,
+                                "odds_o55": None, "odds_u55": None,
+                                "odds_o65": None, "odds_u65": None,
+                                "odds_o75": None, "odds_u75": None
+                            }
+
+                            # Oranlar 
+                            odds = sc.get_odds(ev_id)
+                            extra_data.update(odds)
+
+                            # Maç detayları (Sadece oynanıyorsa veya bitmişse)
+                            if status in ["inprogress", "finished"]:
+                                stats = sc.get_detailed_stats(ev_id)
+                                extra_data.update(stats)
+                                
+                                details = sc.get_event_details(ev_id)
+                                extra_data.update(details)
+                                
+                                inc_lin = sc.get_incidents_and_lineups(ev_id)
+                                extra_data.update(inc_lin)
+
+                            row = sc.parse(ev, extra_data)
+                            db.upsert_match(row)
+                            p_count += 1
+                            
+                    except Exception as e_match:
+                        print(f"[HATA] Maç ID {ev.get('id')} işlenirken atlandı: {e_match}")
+                        
+                print(f"[BİLGİ] {date_str}: {p_count} majör maç işlendi ve veritabanına kaydedildi.")
                 
-                t_id = ev.get("tournament", {}).get("id")
-                u_id = ev.get("uniqueTournament", {}).get("id")
+            except Exception as e_date:
+                print(f"[HATA] {date_str} tarihi çekilirken hata oluştu: {e_date}")
                 
-                if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
-                    ev_id = ev.get("id")
-                    status = (ev.get("status", {}).get("type") or "").lower()
-                    
-                    # Ertelenmiş veya iptal edilmiş maçları atla
-                    if status in ["postponed", "canceled"]:
-                        continue
-                    
-                    extra_data = {
-                        "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
-                        "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
-                        "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
-                        "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
-                        "tackles_h": None, "tackles_a": None,
-                        "referee": None,
-                        "formation_h": None, "formation_a": None,
-                        
-                        # Tüm Oran Alanları İlk Değer Ataması
-                        "odds_1": None, "odds_x": None, "odds_2": None,
-                        "odds_1x": None, "odds_12": None, "odds_x2": None,
-                        "odds_btts_yes": None, "odds_btts_no": None,
-                        "odds_o05": None, "odds_u05": None,
-                        "odds_o15": None, "odds_u15": None,
-                        "odds_o25": None, "odds_u25": None,
-                        "odds_o35": None, "odds_u35": None,
-                        "odds_o45": None, "odds_u45": None,
-                        "odds_o55": None, "odds_u55": None,
-                        "odds_o65": None, "odds_u65": None,
-                        "odds_o75": None, "odds_u75": None
-                    }
-
-                    # Oranlar (maçın durumundan bağımsız olarak çekilir)
-                    odds = sc.get_odds(ev_id)
-                    extra_data.update(odds)
-
-                    # Maç başladıysa veya bittiyse tüm detayları (istatistik ve kadrolar) çek
-                    if status in ["inprogress", "finished"]:
-                        stats = sc.get_detailed_stats(ev_id)
-                        extra_data.update(stats)
-                        
-                        details = sc.get_event_details(ev_id)
-                        extra_data.update(details)
-                        
-                        inc_lin = sc.get_incidents_and_lineups(ev_id)
-                        extra_data.update(inc_lin)
-
-                    row = sc.parse(ev, extra_data)
-                    db.upsert_match(row)
-                    p_count += 1
-            
-            print(f"[BİLGİ] {date_str}: {p_count} majör maç işlendi ve veritabanına kaydedildi.")
-            
     except Exception as e: 
-        print(f"[HATA]: {e}")
+        print(f"[KRİTİK HATA]: {e}")
     finally: 
         sc.stop()
         db.close()
