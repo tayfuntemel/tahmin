@@ -1,4 +1,4 @@
-name: En İyi Tahminleri Kaydet
+name: en_iyi_tahmin_kaydet
 
 on:
   schedule:
