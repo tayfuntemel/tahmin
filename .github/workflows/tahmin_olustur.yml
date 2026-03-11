@@ -2,8 +2,8 @@ name: tahmin_olustur
 
 on:
   schedule:
-    # Her gün saat 00:20'de (UTC) çalışır
-    - cron: '20 0 * * *'
+    # Türkiye Saati ile her gün 02:20'de çalışır (UTC 23:20)
+    - cron: '20 23 * * *'
   workflow_dispatch:
 
 jobs:
