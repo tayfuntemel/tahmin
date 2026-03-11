@@ -1,4 +1,4 @@
-name: 2-gunde iki kez tahmin
+name: tahmin_olustur
 
 on:
   schedule:
