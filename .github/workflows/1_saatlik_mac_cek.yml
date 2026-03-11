@@ -1,8 +1,9 @@
-name: 30-dakikalik mac guncelleme
+name: 20-dakikalik mac guncelleme
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    # Her saatin 0., 20. ve 40. dakikasında çalışır
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,5 +18,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install mysql-connector-python playwright
           playwright install chromium
-      - name: yarim saatte bir maclari ve oranlari cek
+      - name: maclari ve oranlari cek
         run: python mac_cek_guncelle.py
