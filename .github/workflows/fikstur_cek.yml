@@ -1,0 +1,28 @@
+name: Fikstur Cek (Gunde 2 Kez)
+
+on:
+  schedule:
+    # TR Saati ile 02:00 (UTC 23:00) ve 14:00 (UTC 11:00)
+    - cron: '0 23,11 * * *'
+  workflow_dispatch: # Bu satır, GitHub üzerinden manuel olarak da butona basıp çalıştırabilmeni sağlar
+
+jobs:
+  run-fikstur-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu Klonla
+        uses: actions/checkout@v3
+
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Gerekli Kütüphaneleri Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install mysql-connector-python playwright
+          playwright install chromium
+
+      - name: Fikstür Scriptini Çalıştır
+        run: python fikstur_cek.py
