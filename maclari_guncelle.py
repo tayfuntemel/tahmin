@@ -247,15 +247,30 @@ def main():
     sc.start()
     
     try:
-        today = dt.date.today()
-        # Sadece Dün ve Bugün taranır (-1 ve 0)
-        for i in [-1, 0]:
-            target_date = today + dt.timedelta(days=i)
-            date_str = target_date.strftime("%Y-%m-%d")
+        # TÜRKİYE SAATİNE GÖRE DÜN VE BUGÜN HESAPLAMASI (UTC+3)
+        tz_tr = dt.timezone(dt.timedelta(hours=3))
+        now_tr = dt.datetime.now(tz_tr)
+        today_tr = now_tr.date()
+        target_dates_tr = [today_tr - dt.timedelta(days=1), today_tr] # Sadece TR Dün ve TR Bugün
+        
+        # API sınırlarında kalan gece maçları için geniş tarama yapıyoruz (-2, -1, 0)
+        for i in [-2, -1, 0]:
+            fetch_date = today_tr + dt.timedelta(days=i)
+            date_str = fetch_date.strftime("%Y-%m-%d")
             events = sc.by_date(date_str)
             
             p_count = 0
             for ev in events:
+                # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
+                ts = ev.get("startTimestamp")
+                if not isinstance(ts, int):
+                    continue
+                ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
+                
+                # SADECE TR SAATİYLE DÜN VE BUGÜN OLANLARI İŞLE
+                if ev_dt_tr.date() not in target_dates_tr:
+                    continue
+
                 t_id = ev.get("tournament", {}).get("id")
                 u_id = ev.get("uniqueTournament", {}).get("id")
                 
@@ -289,7 +304,7 @@ def main():
                         db.upsert_match(row)
                         p_count += 1
             
-            print(f"[BİTMİŞ/CANLI MAÇLAR] {date_str}: {p_count} maç işlendi ve istatistikler güncellendi.")
+            print(f"[BİTMİŞ/CANLI MAÇLAR] TR Saati Taraması: {date_str} için API isteği yapıldı, {p_count} uygun maç işlendi.")
             
     except Exception as e: 
         print(f"[HATA]: {e}")
