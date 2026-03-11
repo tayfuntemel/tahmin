@@ -88,7 +88,6 @@ class DB:
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
-        # Alanların çoğu NULL kalacak, sadece temel bilgiler ve oranlar güncellenecek
         q = """
         INSERT INTO results_football
         (event_id, start_utc, start_time_utc, status, home_team, away_team,
@@ -279,15 +278,30 @@ def main():
     sc.start()
     
     try:
-        today = dt.date.today()
-        # Sadece Bugün(0) ve Yarın(1) taranır
-        for i in [0, 1]:
-            target_date = today + dt.timedelta(days=i)
-            date_str = target_date.strftime("%Y-%m-%d")
+        # TÜRKİYE SAATİNE GÖRE BUGÜN VE YARIN HESAPLAMASI (UTC+3)
+        tz_tr = dt.timezone(dt.timedelta(hours=3))
+        now_tr = dt.datetime.now(tz_tr)
+        today_tr = now_tr.date()
+        target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)] # Sadece TR Bugün ve TR Yarın
+        
+        # Saat farkından dolayı sınırda kalanları (gece maçları) kaçırmamak için dünden başlayıp yarından sonrasına kadar tarama yapıyoruz (-1, 0, 1)
+        for i in [-1, 0, 1]:
+            fetch_date = today_tr + dt.timedelta(days=i)
+            date_str = fetch_date.strftime("%Y-%m-%d")
             events = sc.by_date(date_str)
             
             p_count = 0
             for ev in events:
+                # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
+                ts = ev.get("startTimestamp")
+                if not isinstance(ts, int):
+                    continue
+                ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
+                
+                # SADECE TR SAATİYLE BUGÜN VE YARIN OLANLARI İŞLE
+                if ev_dt_tr.date() not in target_dates_tr:
+                    continue
+
                 t_id = ev.get("tournament", {}).get("id")
                 u_id = ev.get("uniqueTournament", {}).get("id")
                 
@@ -313,7 +327,7 @@ def main():
                         db.upsert_match(row)
                         p_count += 1
             
-            print(f"[BAŞLAMAMIŞ MAÇLAR] {date_str}: {p_count} maç işlendi ve oranları kaydedildi.")
+            print(f"[BAŞLAMAMIŞ MAÇLAR] TR Saati Taraması: {date_str} için API isteği yapıldı, {p_count} uygun maç işlendi.")
             
     except Exception as e: 
         print(f"[HATA]: {e}")
