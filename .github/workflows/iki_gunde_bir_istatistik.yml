@@ -9,10 +9,16 @@ on:
 jobs:
   istatistik_guncelle:
     runs-on: ubuntu-latest
+    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    # ------------------------------------------
     steps:
-      - uses: actions/checkout@v4
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
       
-      - uses: actions/setup-python@v5
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           
