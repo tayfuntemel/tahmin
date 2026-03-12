@@ -103,18 +103,8 @@ class DB:
          %(tournament_id)s, %(tournament_name)s, %(category_id)s, %(category_name)s, %(country)s)
         ON DUPLICATE KEY UPDATE
           status = VALUES(status),
-          start_utc = VALUES(start_utc), start_time_utc = VALUES(start_time_utc),
-          odds_1 = VALUES(odds_1), odds_x = VALUES(odds_x), odds_2 = VALUES(odds_2),
-          odds_1x = VALUES(odds_1x), odds_12 = VALUES(odds_12), odds_x2 = VALUES(odds_x2),
-          odds_btts_yes = VALUES(odds_btts_yes), odds_btts_no = VALUES(odds_btts_no),
-          odds_o05 = VALUES(odds_o05), odds_u05 = VALUES(odds_u05),
-          odds_o15 = VALUES(odds_o15), odds_u15 = VALUES(odds_u15),
-          odds_o25 = VALUES(odds_o25), odds_u25 = VALUES(odds_u25),
-          odds_o35 = VALUES(odds_o35), odds_u35 = VALUES(odds_u35),
-          odds_o45 = VALUES(odds_o45), odds_u45 = VALUES(odds_u45),
-          odds_o55 = VALUES(odds_o55), odds_u55 = VALUES(odds_u55),
-          odds_o65 = VALUES(odds_o65), odds_u65 = VALUES(odds_u65),
-          odds_o75 = VALUES(odds_o75), odds_u75 = VALUES(odds_u75);
+          start_utc = VALUES(start_utc), 
+          start_time_utc = VALUES(start_time_utc);
         """
         self.cur.execute(q, row)
 
