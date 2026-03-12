@@ -1,5 +1,11 @@
 name: tahmin_olustur
 
+# --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
+# Ayarı buraya koyarak Runner'ı daha işe başlamadan Node.js 24 kullanmaya zorluyoruz.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# -----------------------------------
+
 on:
   schedule:
     # Türkiye Saati ile her gün 02:20'de çalışır (UTC 23:20)
@@ -9,10 +15,6 @@ on:
 jobs:
   tahmin_yap:
     runs-on: ubuntu-latest
-    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # ------------------------------------------
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
