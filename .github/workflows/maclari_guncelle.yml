@@ -2,19 +2,22 @@ name: Maclari Guncelle (Her 10 Dakikada Bir)
 
 on:
   schedule:
-    # Her 10 dakikada bir çalıştırır
     - cron: '*/10 * * * *'
-  workflow_dispatch: # Bu satır, GitHub üzerinden manuel olarak da butona basıp çalıştırabilmeni sağlar
+  workflow_dispatch:
 
 jobs:
   run-guncelle-script:
     runs-on: ubuntu-latest
+    # --- KRİTİK NOKTA BURASI ---
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    # ---------------------------
     steps:
       - name: Depoyu Klonla
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # Eğer v5 çıktıysa v5 yapabilirsin
 
       - name: Python Ortamını Kur
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5 # Eğer v6 çıktıysa v6 yapabilirsin
         with:
           python-version: '3.10'
 
