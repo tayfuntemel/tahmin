@@ -9,6 +9,10 @@ on:
 jobs:
   run-fikstur-script:
     runs-on: ubuntu-latest
+    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    # ------------------------------------------
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
