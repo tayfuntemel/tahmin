@@ -9,6 +9,10 @@ on:
 jobs:
   tahmin-kaydet:
     runs-on: ubuntu-latest
+    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    # ------------------------------------------
     steps:
       - name: Repoyu Klonla
         uses: actions/checkout@v4
