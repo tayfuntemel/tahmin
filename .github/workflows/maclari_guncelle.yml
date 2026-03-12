@@ -1,5 +1,11 @@
 name: Maclari Guncelle (Her 10 Dakikada Bir)
 
+# --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
+# Ayarı buraya koyarak Runner'ı henüz işe başlamadan Node.js 24 motoruna zorluyoruz.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# -----------------------------------
+
 on:
   schedule:
     - cron: '*/10 * * * *'
@@ -8,16 +14,12 @@ on:
 jobs:
   run-guncelle-script:
     runs-on: ubuntu-latest
-    # --- KRİTİK NOKTA BURASI ---
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # ---------------------------
     steps:
       - name: Depoyu Klonla
-        uses: actions/checkout@v4 # Eğer v5 çıktıysa v5 yapabilirsin
+        uses: actions/checkout@v4
 
       - name: Python Ortamını Kur
-        uses: actions/setup-python@v5 # Eğer v6 çıktıysa v6 yapabilirsin
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
