@@ -1,18 +1,20 @@
 name: Fikstur Cek (Gunde 2 Kez)
 
+# --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
+# Runner daha işe başlamadan Node.js 24 kullanmaya zorlanır.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# -----------------------------------
+
 on:
   schedule:
     # TR Saati ile 02:00 (UTC 23:00) ve 14:00 (UTC 11:00)
     - cron: '0 23,11 * * *'
-  workflow_dispatch: # Bu satır, GitHub üzerinden manuel olarak da butona basıp çalıştırabilmeni sağlar
+  workflow_dispatch: # Bu satır, manuel çalıştırmayı sağlar.
 
 jobs:
   run-fikstur-script:
     runs-on: ubuntu-latest
-    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # ------------------------------------------
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
