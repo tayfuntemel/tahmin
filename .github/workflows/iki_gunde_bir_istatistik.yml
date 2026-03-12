@@ -1,5 +1,11 @@
 name: iki_gunde_bir_istatistik
 
+# --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
+# Ayarı buraya koyarak tüm aksiyonların en baştan Node.js 24 ile çalışmasını sağlıyoruz.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+# -----------------------------------
+
 on:
   schedule:
     # Her 2 günde bir saat 04:30'da (UTC) çalışır
@@ -9,10 +15,6 @@ on:
 jobs:
   istatistik_guncelle:
     runs-on: ubuntu-latest
-    # --- KRİTİK EKLEME: Node.js 24 Zorlaması ---
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    # ------------------------------------------
     steps:
       - name: Depoyu Klonla
         uses: actions/checkout@v4
