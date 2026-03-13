@@ -342,4 +342,4 @@ if __name__ == "__main__":
         predictor.run_predictions(days_ahead=2)
     finally:
         predictor.close()
-    input("\nİşlem tamamlandı. Kapatmak için Enter tuşuna basın...")
+
