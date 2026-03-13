@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
-Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var)
+Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) ve Dünün Maçlarını Kapsama
 """
 
 import mysql.connector
@@ -87,18 +87,20 @@ class UltimatePredictor:
         self.cur.close()
         self.conn.close()
 
-    def get_upcoming_matches(self, days_ahead: int = 2) -> list:
-        today = date.today()
-        end_date = today + timedelta(days=days_ahead)
+    def get_matches_to_predict(self, days_ahead: int = 2, days_back: int = 1) -> list:
+        # Dünü de kapsayacak şekilde tarih aralığını belirliyoruz
+        start_date = date.today() - timedelta(days=days_back)
+        end_date = date.today() + timedelta(days=days_ahead)
+        
+        # 'status' kontrolünü kaldırdık. Böylece dünkü bitmiş maçları da analiz eder.
         query = """
             SELECT rf.* FROM results_football rf
             LEFT JOIN match_predictions mp ON rf.event_id = mp.event_id
             WHERE rf.start_utc BETWEEN %s AND %s
-              AND rf.status IN ('notstarted', 'scheduled')
               AND mp.event_id IS NULL
             ORDER BY rf.start_utc, rf.start_time_utc
         """
-        self.cur.execute(query, (today, end_date))
+        self.cur.execute(query, (start_date, end_date))
         return self.cur.fetchall()
 
     def get_league_stats(self, tournament_id: int) -> Dict[str, float]:
@@ -287,14 +289,14 @@ class UltimatePredictor:
         }
         self.cur.execute(sql, data)
 
-    def run_predictions(self, days_ahead: int = 2):
-        matches = self.get_upcoming_matches(days_ahead)
+    def run_predictions(self, days_ahead: int = 2, days_back: int = 1):
+        matches = self.get_matches_to_predict(days_ahead, days_back)
         print(f"\n{'='*80}")
-        print(f"  {len(matches)} YENİ MAÇ İÇİN TAHMİNLER (VE DB KAYDI)")
+        print(f"  {len(matches)} YENİ MAÇ İÇİN TAHMİNLER (DÜN DAHİL)")
         print(f"{'='*80}\n")
 
         if len(matches) == 0:
-            print("Tüm maçların tahmini zaten yapılmış veya yakında maç yok.")
+            print("Tüm maçların tahmini zaten yapılmış veya veritabanında maç yok.")
             return
 
         for match in matches:
@@ -339,7 +341,7 @@ class UltimatePredictor:
 if __name__ == "__main__":
     predictor = UltimatePredictor(CONFIG["db"])
     try:
-        predictor.run_predictions(days_ahead=2)
+        predictor.run_predictions(days_ahead=2, days_back=1)
     finally:
         predictor.close()
-
+    print("\n[BAŞARILI] İşlem tamamlandı.")
