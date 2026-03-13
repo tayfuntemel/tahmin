@@ -26,7 +26,6 @@ class BestBetAnalyzer:
         print("[EN İYİ TAHMİN] Veritabanı bağlantısı başarılı.")
 
     def _ensure_columns_exist(self):
-        """match_predictions tablosuna en iyi tahmin verilerini tutacak sütunları ekler."""
         columns_to_add = [
             ("best_market_raw", "VARCHAR(32) NULL"),
             ("best_market_tr", "VARCHAR(64) NULL"),
@@ -39,7 +38,6 @@ class BestBetAnalyzer:
             try:
                 self.cur.execute(f"ALTER TABLE match_predictions ADD COLUMN {col_name} {col_type}")
             except mysql.connector.Error as err:
-                # Sütun zaten varsa oluşan 1060 hatasını görmezden geliyoruz
                 if err.errno != 1060:
                     print(f"[HATA] Sütun eklenirken hata: {err}")
 
@@ -50,10 +48,10 @@ class BestBetAnalyzer:
     def process_best_bets(self):
         print("[EN İYİ TAHMİN] Henüz tahmini oluşturulmamış yeni maçlar aranıyor...")
         
-        # SADECE best_market_raw sütunu boş olan (daha önce tahmin yapılmamış) maçları çekiyoruz
+        # SADECE best_market_raw sütunu boş olan maçları ve yeni market oranlarını çekiyoruz
         query = """
             SELECT MP.*, 
-                   R.odds_1, R.odds_x, R.odds_2, R.odds_o25, R.odds_u25, R.odds_btts_yes
+                   R.odds_1x, R.odds_x2, R.odds_o15, R.odds_u35, R.odds_btts_yes
             FROM match_predictions MP
             LEFT JOIN results_football R ON MP.event_id = R.event_id 
             WHERE MP.best_market_raw IS NULL
@@ -75,15 +73,12 @@ class BestBetAnalyzer:
         
         count = 0
         for row in matches:
-            prob_u25 = 100 - float(row['prob_o25']) if row['prob_o25'] is not None else 0
-            
             markets = {
-                '1':    {'prob': row['prob_1'],   'value': row['value_1'],   'odds': row['odds_1'], 'name': 'ms 1'},
-                'X':    {'prob': row['prob_x'],   'value': row['value_x'],   'odds': row['odds_x'], 'name': 'ms x'},
-                '2':    {'prob': row['prob_2'],   'value': row['value_2'],   'odds': row['odds_2'], 'name': 'ms 2'},
-                'O25':  {'prob': row['prob_o25'], 'value': row['value_o25'], 'odds': row['odds_o25'], 'name': '2.5 üst'},
-                'U25':  {'prob': prob_u25,        'value': row['value_u25'], 'odds': row['odds_u25'], 'name': '2.5 alt'},
-                'BTTS': {'prob': row['prob_btts'],'value': row['value_btts'],'odds': row['odds_btts_yes'], 'name': 'kg var'}
+                '1X':   {'prob': row['prob_1x'],   'value': row['value_1x'],   'odds': row['odds_1x'], 'name': '1x çifte şans'},
+                'X2':   {'prob': row['prob_x2'],   'value': row['value_x2'],   'odds': row['odds_x2'], 'name': 'x2 çifte şans'},
+                'O15':  {'prob': row['prob_o15'],  'value': row['value_o15'],  'odds': row['odds_o15'], 'name': '1.5 üst'},
+                'U35':  {'prob': row['prob_u35'],  'value': row['value_u35'],  'odds': row['odds_u35'], 'name': '3.5 alt'},
+                'BTTS': {'prob': row['prob_btts'], 'value': row['value_btts'], 'odds': row['odds_btts_yes'], 'name': 'kg var'}
             }
 
             best_bet = None
@@ -97,8 +92,8 @@ class BestBetAnalyzer:
                 except (ValueError, TypeError):
                     continue
 
-                # %70 ihtimal şartı KALDIRILDI. Sadece Oran >= 1.50 ve Değer (Value) > 0 şartı aranıyor.
-                if odds >= 1.50 and value > 0:
+                # Sadece oranı olanları (odds > 0) ve sistemde kâr ihtimali (value > 0) taşıyanları değerlendiriyoruz.
+                if odds > 0 and value > 0:
                     if value > highest_value:
                         highest_value = value
                         best_bet = {
@@ -109,7 +104,6 @@ class BestBetAnalyzer:
                             'value': value
                         }
 
-            # En iyi bahis bulunduysa kaydet, bulunamadıysa bir dahaki sefere tekrar taranmaması için "Yok" anlamında 'NO_BET' yaz
             if best_bet:
                 self.cur.execute(update_query, (
                     best_bet['market_raw'], 
@@ -121,7 +115,6 @@ class BestBetAnalyzer:
                 ))
                 count += 1
             else:
-                # Maç incelendi ama uygun şartlarda bahis çıkmadı. Tekrar taranmasını önlemek için işaretliyoruz.
                 self.cur.execute(update_query, ('NO_BET', 'Bahis Yok', 0, 0, 0, row['event_id']))
 
         print(f"[BAŞARILI] Toplam {count} maça başarıyla tahmin atandı.")
