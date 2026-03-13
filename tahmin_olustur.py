@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
-Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) ve Dünün Maçlarını Kapsama
+Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) - Sadece Bugün ve Yarın
 """
 
 import mysql.connector
@@ -87,20 +87,20 @@ class UltimatePredictor:
         self.cur.close()
         self.conn.close()
 
-    def get_matches_to_predict(self, days_ahead: int = 2, days_back: int = 1) -> list:
-        # Dünü de kapsayacak şekilde tarih aralığını belirliyoruz
-        start_date = date.today() - timedelta(days=days_back)
-        end_date = date.today() + timedelta(days=days_ahead)
+    def get_upcoming_matches(self, days_ahead: int = 1) -> list:
+        # Sadece BUGÜN ve YARIN (today + 1 gün) arasındaki BAŞLAMAMIŞ maçlar
+        today = date.today()
+        end_date = today + timedelta(days=days_ahead)
         
-        # 'status' kontrolünü kaldırdık. Böylece dünkü bitmiş maçları da analiz eder.
         query = """
             SELECT rf.* FROM results_football rf
             LEFT JOIN match_predictions mp ON rf.event_id = mp.event_id
             WHERE rf.start_utc BETWEEN %s AND %s
+              AND rf.status IN ('notstarted', 'scheduled')
               AND mp.event_id IS NULL
             ORDER BY rf.start_utc, rf.start_time_utc
         """
-        self.cur.execute(query, (start_date, end_date))
+        self.cur.execute(query, (today, end_date))
         return self.cur.fetchall()
 
     def get_league_stats(self, tournament_id: int) -> Dict[str, float]:
@@ -206,14 +206,12 @@ class UltimatePredictor:
             for k in score_probs:
                 score_probs[k] /= total_prob
 
-        # YENİ MARKET İHTİMALLERİ
         prob_1x = sum(prob for (i, j), prob in score_probs.items() if i >= j)
         prob_x2 = sum(prob for (i, j), prob in score_probs.items() if i <= j)
         prob_over_15 = sum(prob for (i, j), prob in score_probs.items() if i + j > 1.5)
         prob_under_35 = sum(prob for (i, j), prob in score_probs.items() if i + j < 3.5)
         prob_btts = sum(prob for (i, j), prob in score_probs.items() if i > 0 and j > 0)
 
-        # MEVCUT BAHİS ORANLARI
         odds_1x = match.get("odds_1x")
         odds_x2 = match.get("odds_x2")
         odds_o15 = match.get("odds_o15")
@@ -289,14 +287,14 @@ class UltimatePredictor:
         }
         self.cur.execute(sql, data)
 
-    def run_predictions(self, days_ahead: int = 2, days_back: int = 1):
-        matches = self.get_matches_to_predict(days_ahead, days_back)
+    def run_predictions(self, days_ahead: int = 1):
+        matches = self.get_upcoming_matches(days_ahead)
         print(f"\n{'='*80}")
-        print(f"  {len(matches)} YENİ MAÇ İÇİN TAHMİNLER (DÜN DAHİL)")
+        print(f"  {len(matches)} YENİ MAÇ İÇİN TAHMİNLER (BUGÜN VE YARIN)")
         print(f"{'='*80}\n")
 
         if len(matches) == 0:
-            print("Tüm maçların tahmini zaten yapılmış veya veritabanında maç yok.")
+            print("Tüm maçların tahmini zaten yapılmış veya yakında maç yok.")
             return
 
         for match in matches:
@@ -341,7 +339,8 @@ class UltimatePredictor:
 if __name__ == "__main__":
     predictor = UltimatePredictor(CONFIG["db"])
     try:
-        predictor.run_predictions(days_ahead=2, days_back=1)
+        # days_ahead=1 -> Bugün ve Yarın
+        predictor.run_predictions(days_ahead=1)
     finally:
         predictor.close()
     print("\n[BAŞARILI] İşlem tamamlandı.")
