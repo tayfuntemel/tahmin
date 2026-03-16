@@ -2,10 +2,12 @@
 """
 ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
 Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) - Sadece Bugün ve Yarın
+Eklenen Özellik: Cron için satır sayısı kontrolü ve başarısız durumlarda otomatik tekrar mekanizması.
 """
 
 import mysql.connector
 import math
+import time
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, Tuple, Optional
 
@@ -86,6 +88,12 @@ class UltimatePredictor:
     def close(self):
         self.cur.close()
         self.conn.close()
+
+    def get_prediction_count(self) -> int:
+        """Veritabanındaki toplam tahmin (satır) sayısını döndürür."""
+        self.cur.execute("SELECT COUNT(*) as count FROM match_predictions")
+        row = self.cur.fetchone()
+        return row['count'] if row else 0
 
     def get_upcoming_matches(self, days_ahead: int = 1) -> list:
         # Sadece BUGÜN ve YARIN (today + 1 gün) arasındaki BAŞLAMAMIŞ maçlar
@@ -339,8 +347,40 @@ class UltimatePredictor:
 if __name__ == "__main__":
     predictor = UltimatePredictor(CONFIG["db"])
     try:
-        # days_ahead=1 -> Bugün ve Yarın
-        predictor.run_predictions(days_ahead=1)
+        max_deneme = 3
+        bekleme_suresi = 60 # Saniye cinsinden bekleme süresi
+
+        for deneme in range(1, max_deneme + 1):
+            baslangic_sayisi = predictor.get_prediction_count()
+            print(f"\n>>> DENEME {deneme}/{max_deneme} <<<")
+            print(f"Başlangıçtaki Toplam Tahmin Sayısı: {baslangic_sayisi}")
+
+            # Tahminleri çalıştır
+            predictor.run_predictions(days_ahead=1)
+
+            bitis_sayisi = predictor.get_prediction_count()
+            eklenen_sayi = bitis_sayisi - baslangic_sayisi
+
+            print(f"Bitişteki Toplam Tahmin Sayısı: {bitis_sayisi}")
+            print(f"Bu işlemde eklenen yeni tahmin sayısı: {eklenen_sayi}")
+
+            if eklenen_sayi > 0:
+                print("\n[BAŞARILI] Yeni tahminler başarıyla kaydedildi. İşlem tamamlandı.")
+                break
+            else:
+                # Yeni kayıt eklenmediyse, gerçekten maç mı yok yoksa hata mı var kontrol edelim
+                bekleyen_maclar = predictor.get_upcoming_matches(days_ahead=1)
+                
+                if len(bekleyen_maclar) == 0:
+                    print("\n[BİLGİ] Veritabanına göre tahmin yapılacak yeni maç yok. Tekrarlamaya gerek yok.")
+                    break
+                else:
+                    print(f"\n[UYARI] Tahmin bekleyen {len(bekleyen_maclar)} maç var ama veritabanına kayıt yapılamadı!")
+                    if deneme < max_deneme:
+                        print(f"{bekleme_suresi} saniye bekleniyor ve tekrar denenecek...")
+                        time.sleep(bekleme_suresi)
+                    else:
+                        print("\n[HATA] Maksimum deneme sayısına ulaşıldı. İşlem başarısız.")
+                        
     finally:
         predictor.close()
-    print("\n[BAŞARILI] İşlem tamamlandı.")
