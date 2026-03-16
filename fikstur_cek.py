@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import datetime as dt, time, json
+import datetime as dt, time, json, sys
 import mysql.connector
 from typing import Dict, Any, List
 from playwright.sync_api import sync_playwright
@@ -29,7 +29,6 @@ MAJOR_TOURNAMENT_IDS = {
     54, 64, 29, 1060, 219, 652, 144, 1339, 1340, 1341
 }
 
-# (Orijinal tablonun tamamen aynı şeması)
 SCHEMA_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS results_football (
   event_id        BIGINT UNSIGNED NOT NULL,
@@ -262,68 +261,96 @@ class Scraper:
         return row
 
 def main():
-    db = DB(CONFIG["db"])
-    db.connect()
-    sc = Scraper(CONFIG["api"])
-    sc.start()
+    max_retries = 3  # İşlem başarısız olursa maksimum deneme sayısı
+    attempt = 1
     
-    try:
-        # TÜRKİYE SAATİNE GÖRE BUGÜN VE YARIN HESAPLAMASI (UTC+3)
-        tz_tr = dt.timezone(dt.timedelta(hours=3))
-        now_tr = dt.datetime.now(tz_tr)
-        today_tr = now_tr.date()
-        target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)] # Sadece TR Bugün ve TR Yarın
+    while attempt <= max_retries:
+        print(f"\n--- ÇALIŞTIRMA DENEMESİ {attempt}/{max_retries} ---")
         
-        # Saat farkından dolayı sınırda kalanları (gece maçları) kaçırmamak için dünden başlayıp yarından sonrasına kadar tarama yapıyoruz (-1, 0, 1)
-        for i in [-1, 0, 1]:
-            fetch_date = today_tr + dt.timedelta(days=i)
-            date_str = fetch_date.strftime("%Y-%m-%d")
-            events = sc.by_date(date_str)
+        # Sınıfları döngü içinde başlatıyoruz ki her denemede temiz bir bağlantı kurulsun
+        db = DB(CONFIG["db"])
+        sc = Scraper(CONFIG["api"])
+        total_processed_in_this_run = 0
+        
+        try:
+            db.connect()
+            sc.start()
             
-            p_count = 0
-            for ev in events:
-                # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
-                ts = ev.get("startTimestamp")
-                if not isinstance(ts, int):
-                    continue
-                ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
+            # TÜRKİYE SAATİNE GÖRE BUGÜN VE YARIN HESAPLAMASI (UTC+3)
+            tz_tr = dt.timezone(dt.timedelta(hours=3))
+            now_tr = dt.datetime.now(tz_tr)
+            today_tr = now_tr.date()
+            target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)] # Sadece TR Bugün ve TR Yarın
+            
+            # Saat farkından dolayı sınırda kalanları (gece maçları) kaçırmamak için dünden başlayıp yarından sonrasına kadar tarama yapıyoruz (-1, 0, 1)
+            for i in [-1, 0, 1]:
+                fetch_date = today_tr + dt.timedelta(days=i)
+                date_str = fetch_date.strftime("%Y-%m-%d")
+                events = sc.by_date(date_str)
                 
-                # SADECE TR SAATİYLE BUGÜN VE YARIN OLANLARI İŞLE
-                if ev_dt_tr.date() not in target_dates_tr:
-                    continue
-
-                t_id = ev.get("tournament", {}).get("id")
-                u_id = ev.get("uniqueTournament", {}).get("id")
-                
-                if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
-                    ev_id = ev.get("id")
-                    status = (ev.get("status", {}).get("type") or "").lower()
+                p_count = 0
+                for ev in events:
+                    # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
+                    ts = ev.get("startTimestamp")
+                    if not isinstance(ts, int):
+                        continue
+                    ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
                     
-                    # SADECE BAŞLAMAMIŞ MAÇLAR
-                    if status in ["notstarted", "scheduled"]:
-                        extra_data = {
-                            "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
-                            "odds_btts_yes": None, "odds_btts_no": None, "odds_o05": None, "odds_u05": None,
-                            "odds_o15": None, "odds_u15": None, "odds_o25": None, "odds_u25": None,
-                            "odds_o35": None, "odds_u35": None, "odds_o45": None, "odds_u45": None,
-                            "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
-                        }
+                    # SADECE TR SAATİYLE BUGÜN VE YARIN OLANLARI İŞLE
+                    if ev_dt_tr.date() not in target_dates_tr:
+                        continue
 
-                        # Oranları çek
-                        odds = sc.get_odds(ev_id)
-                        extra_data.update(odds)
+                    t_id = ev.get("tournament", {}).get("id")
+                    u_id = ev.get("uniqueTournament", {}).get("id")
+                    
+                    if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
+                        ev_id = ev.get("id")
+                        status = (ev.get("status", {}).get("type") or "").lower()
+                        
+                        # SADECE BAŞLAMAMIŞ MAÇLAR
+                        if status in ["notstarted", "scheduled"]:
+                            extra_data = {
+                                "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
+                                "odds_btts_yes": None, "odds_btts_no": None, "odds_o05": None, "odds_u05": None,
+                                "odds_o15": None, "odds_u15": None, "odds_o25": None, "odds_u25": None,
+                                "odds_o35": None, "odds_u35": None, "odds_o45": None, "odds_u45": None,
+                                "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
+                            }
 
-                        row = sc.parse(ev, extra_data)
-                        db.upsert_match(row)
-                        p_count += 1
-            
-            print(f"[BAŞLAMAMIŞ MAÇLAR] TR Saati Taraması: {date_str} için API isteği yapıldı, {p_count} uygun maç işlendi.")
-            
-    except Exception as e: 
-        print(f"[HATA]: {e}")
-    finally: 
-        sc.stop()
-        db.close()
+                            # Oranları çek
+                            odds = sc.get_odds(ev_id)
+                            extra_data.update(odds)
+
+                            row = sc.parse(ev, extra_data)
+                            db.upsert_match(row)
+                            p_count += 1
+                            total_processed_in_this_run += 1
+                
+                print(f"[BAŞLAMAMIŞ MAÇLAR] TR Saati Taraması: {date_str} için API isteği yapıldı, {p_count} uygun maç işlendi.")
+                
+        except Exception as e: 
+            print(f"[HATA]: İşlem sırasında bir sorun oluştu: {e}")
+        finally: 
+            # Tarayıcıyı ve DB bağlantısını her deneme sonunda düzgünce kapatıyoruz
+            sc.stop()
+            db.close()
+
+        # Döngü sonu kontrolü: Eğer veri başarıyla çekildiyse döngüyü kır ve tamamen çık
+        if total_processed_in_this_run > 0:
+            print(f"\n[BAŞARILI] Toplam {total_processed_in_this_run} maç işlendi. Script sorunsuz tamamlandı.")
+            break
+        else:
+            print(f"\n[UYARI] Bu denemede HİÇBİR maç verisi çekilemedi (Toplam 0 maç)!")
+            if attempt < max_retries:
+                print("15 saniye bekleniyor, ardından tekrar denenecek...")
+                time.sleep(15)
+            attempt += 1
+
+    # Eğer 3 deneme de bittiyse ve hala hiç veri çekilemediyse GitHub Actions'ı hatalı bitir.
+    # (Not: Yaz dönemlerinde veya fikstürün gerçekten boş olduğu nadir günlerde de bu hata tetiklenebilir.)
+    if total_processed_in_this_run == 0:
+        print("\n[KRİTİK HATA] Maksimum deneme sayısına ulaşıldı ancak hiçbir veri çekilemedi.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
