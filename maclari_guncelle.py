@@ -29,7 +29,6 @@ MAJOR_TOURNAMENT_IDS = {
     54, 64, 29, 1060, 219, 652, 144, 1339, 1340, 1341
 }
 
-# (Orijinal tablonun tamamen aynı şeması)
 SCHEMA_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS results_football (
   event_id        BIGINT UNSIGNED NOT NULL,
@@ -246,65 +245,86 @@ def main():
     sc = Scraper(CONFIG["api"])
     sc.start()
     
+    baslangic_zamani = time.time()
+    calisma_suresi = 9 * 60  # 9 dakika (saniye cinsinden)
+    bekleme_suresi = 60      # Her tur arası 60 saniye bekle
+    
     try:
-        # TÜRKİYE SAATİNE GÖRE DÜN VE BUGÜN HESAPLAMASI (UTC+3)
-        tz_tr = dt.timezone(dt.timedelta(hours=3))
-        now_tr = dt.datetime.now(tz_tr)
-        today_tr = now_tr.date()
-        target_dates_tr = [today_tr - dt.timedelta(days=1), today_tr] # Sadece TR Dün ve TR Bugün
-        
-        # API sınırlarında kalan gece maçları için geniş tarama yapıyoruz (-2, -1, 0)
-        for i in [-2, -1, 0]:
-            fetch_date = today_tr + dt.timedelta(days=i)
-            date_str = fetch_date.strftime("%Y-%m-%d")
-            events = sc.by_date(date_str)
+        while True:
+            # TÜRKİYE SAATİNE GÖRE DÜN VE BUGÜN HESAPLAMASI (UTC+3)
+            tz_tr = dt.timezone(dt.timedelta(hours=3))
+            now_tr = dt.datetime.now(tz_tr)
+            today_tr = now_tr.date()
+            target_dates_tr = [today_tr - dt.timedelta(days=1), today_tr] # Sadece TR Dün ve TR Bugün
             
-            p_count = 0
-            for ev in events:
-                # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
-                ts = ev.get("startTimestamp")
-                if not isinstance(ts, int):
-                    continue
-                ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
+            toplam_islenen = 0
+            
+            # API sınırlarında kalan gece maçları için geniş tarama yapıyoruz (-2, -1, 0)
+            for i in [-2, -1, 0]:
+                fetch_date = today_tr + dt.timedelta(days=i)
+                date_str = fetch_date.strftime("%Y-%m-%d")
+                events = sc.by_date(date_str)
                 
-                # SADECE TR SAATİYLE DÜN VE BUGÜN OLANLARI İŞLE
-                if ev_dt_tr.date() not in target_dates_tr:
-                    continue
-
-                t_id = ev.get("tournament", {}).get("id")
-                u_id = ev.get("uniqueTournament", {}).get("id")
-                
-                if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
-                    ev_id = ev.get("id")
-                    status = (ev.get("status", {}).get("type") or "").lower()
+                p_count = 0
+                for ev in events:
+                    # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
+                    ts = ev.get("startTimestamp")
+                    if not isinstance(ts, int):
+                        continue
+                    ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
                     
-                    # SADECE OYNANAN VEYA BİTMİŞ MAÇLAR
-                    if status in ["inprogress", "finished", "ended"]:
-                        extra_data = {
-                            "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
-                            "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
-                            "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
-                            "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
-                            "tackles_h": None, "tackles_a": None,
-                            "referee": None,
-                            "formation_h": None, "formation_a": None
-                        }
+                    # SADECE TR SAATİYLE DÜN VE BUGÜN OLANLARI İŞLE
+                    if ev_dt_tr.date() not in target_dates_tr:
+                        continue
 
-                        # Detaylı İstatistikleri çek
-                        stats = sc.get_detailed_stats(ev_id)
-                        extra_data.update(stats)
+                    t_id = ev.get("tournament", {}).get("id")
+                    u_id = ev.get("uniqueTournament", {}).get("id")
+                    
+                    if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
+                        ev_id = ev.get("id")
+                        status = (ev.get("status", {}).get("type") or "").lower()
                         
-                        details = sc.get_event_details(ev_id)
-                        extra_data.update(details)
-                        
-                        inc_lin = sc.get_incidents_and_lineups(ev_id)
-                        extra_data.update(inc_lin)
+                        # SADECE OYNANAN VEYA BİTMİŞ MAÇLAR
+                        if status in ["inprogress", "finished", "ended"]:
+                            extra_data = {
+                                "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
+                                "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
+                                "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
+                                "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
+                                "tackles_h": None, "tackles_a": None,
+                                "referee": None,
+                                "formation_h": None, "formation_a": None
+                            }
 
-                        row = sc.parse(ev, extra_data)
-                        db.upsert_match(row)
-                        p_count += 1
+                            # Detaylı İstatistikleri çek
+                            stats = sc.get_detailed_stats(ev_id)
+                            extra_data.update(stats)
+                            
+                            details = sc.get_event_details(ev_id)
+                            extra_data.update(details)
+                            
+                            inc_lin = sc.get_incidents_and_lineups(ev_id)
+                            extra_data.update(inc_lin)
+
+                            row = sc.parse(ev, extra_data)
+                            db.upsert_match(row)
+                            p_count += 1
+                            toplam_islenen += 1
+                
+                if p_count > 0:
+                    print(f"[{time.strftime('%H:%M:%S')}] {date_str} -> {p_count} maç güncellendi.")
             
-            print(f"[BİTMİŞ/CANLI MAÇLAR] TR Saati Taraması: {date_str} için API isteği yapıldı, {p_count} uygun maç işlendi.")
+            print(f"[{time.strftime('%H:%M:%S')}] Tur tamamlandı. Toplam {toplam_islenen} maç işlendi.")
+            
+            # --- ZAMAN KONTROLÜ ---
+            gecen_sure = time.time() - baslangic_zamani
+            if gecen_sure >= calisma_suresi:
+                print(f"\n[BİLGİ] {calisma_suresi/60} dakikalık çalışma süresi doldu. Github Actions Cron'un yeniden başlatması için güvenle kapanıyor...")
+                break # Döngüden çık ve programı bitir
+            
+            kalan_sure_dk = (calisma_suresi - gecen_sure) / 60
+            print(f"[BİLGİ] {bekleme_suresi} saniye bekleniyor... (Kalan çalışma süresi: {kalan_sure_dk:.1f} dakika)\n")
+            time.sleep(bekleme_suresi)
             
     except Exception as e: 
         print(f"[HATA]: {e}")
