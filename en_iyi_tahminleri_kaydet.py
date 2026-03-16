@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import mysql.connector
+import time
 
 # --- VERİTABANI BAĞLANTISI ---
 CONFIG = {
@@ -40,6 +41,18 @@ class BestBetAnalyzer:
             except mysql.connector.Error as err:
                 if err.errno != 1060:
                     print(f"[HATA] Sütun eklenirken hata: {err}")
+
+    def get_last_updated_time(self):
+        """Tablodaki en güncel updated_at zamanını döndürür."""
+        self.cur.execute("SELECT MAX(updated_at) as last_time FROM match_predictions")
+        row = self.cur.fetchone()
+        return row['last_time'] if row and row['last_time'] else None
+
+    def get_pending_count(self):
+        """Henüz en iyi tahmini atanmamış (best_market_raw IS NULL) maç sayısını döndürür."""
+        self.cur.execute("SELECT COUNT(*) as count FROM match_predictions WHERE best_market_raw IS NULL")
+        row = self.cur.fetchone()
+        return row['count'] if row else 0
 
     def close(self):
         if self.cur: self.cur.close()
@@ -123,7 +136,45 @@ if __name__ == "__main__":
     analyzer = BestBetAnalyzer(CONFIG["db"])
     try:
         analyzer.connect()
-        analyzer.process_best_bets()
+        
+        max_deneme = 3
+        bekleme_suresi = 60 # Saniye
+        
+        for deneme in range(1, max_deneme + 1):
+            print(f"\n>>> DENEME {deneme}/{max_deneme} <<<")
+            
+            bekleyen_mac = analyzer.get_pending_count()
+            if bekleyen_mac == 0:
+                print("[BİLGİ] 'best_market_raw' sütunu boş olan, yani güncellenmesi beklenen yeni maç yok. İşlem tamam.")
+                break
+                
+            baslangic_zaman = analyzer.get_last_updated_time()
+            print(f"Başlangıçtaki Son Güncelleme Zamanı: {baslangic_zaman}")
+            print(f"Güncelleme Bekleyen Maç Sayısı: {bekleyen_mac}")
+            
+            # İşlemi çalıştır
+            analyzer.process_best_bets()
+            
+            bitis_zaman = analyzer.get_last_updated_time()
+            print(f"Bitişteki Son Güncelleme Zamanı: {bitis_zaman}")
+            
+            if baslangic_zaman != bitis_zaman:
+                print("\n[BAŞARILI] Tablodaki 'updated_at' zamanı değişti, kayıtlar başarıyla güncellendi.")
+                break
+            else:
+                # Zaman değişmediyse gerçekten bir hata mı oldu yoksa bekleyen maç mı kalmadı tekrar bakalım
+                kalan_mac = analyzer.get_pending_count()
+                if kalan_mac == 0:
+                    print("\n[BİLGİ] Bekleyen tüm maçlar işlendi veya zaten kalmamıştı.")
+                    break
+                else:
+                    print(f"\n[UYARI] İşlem yapıldı ama updated_at zamanı DEĞİŞMEDİ! Halen güncellenmeyi bekleyen {kalan_mac} maç var.")
+                    if deneme < max_deneme:
+                        print(f"{bekleme_suresi} saniye bekleniyor ve tekrar denenecek...")
+                        time.sleep(bekleme_suresi)
+                    else:
+                        print("\n[HATA] Maksimum deneme sayısına ulaşıldı. Tablo güncellenemedi!")
+
     except Exception as e:
         print(f"[HATA] Tahmin oluşturulurken bir sorun oluştu: {e}")
     finally:
