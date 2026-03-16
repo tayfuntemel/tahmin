@@ -11,6 +11,11 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
+# İŞTE BURASI ÇOK ÖNEMLİ (ÇAKIŞMA ÖNLEYİCİ)
+concurrency:
+  group: maclari-guncelle-group
+  cancel-in-progress: false
+
 jobs:
   run-guncelle-script:
     runs-on: ubuntu-latest
