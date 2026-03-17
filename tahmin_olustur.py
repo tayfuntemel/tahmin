@@ -3,12 +3,13 @@
 ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
 Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) - Sadece Bugün ve Yarın
 Eklenen Özellik: Cron için satır sayısı kontrolü ve başarısız durumlarda otomatik tekrar mekanizması.
+Timezone Güncellemesi: GitHub UTC saati yerine Türkiye saati (UTC+3) baz alınmıştır.
 """
 
 import mysql.connector
 import math
 import time
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, Any, Tuple, Optional
 
 # ======================== YAPILANDIRMA ========================
@@ -97,7 +98,9 @@ class UltimatePredictor:
 
     def get_upcoming_matches(self, days_ahead: int = 1) -> list:
         # Sadece BUGÜN ve YARIN (today + 1 gün) arasındaki BAŞLAMAMIŞ maçlar
-        today = date.today()
+        # Timezone Ayarı: datetime.now(tz_tr).date() kullanılarak GitHub'ın UTC saati yerine Türkiye saati baz alındı.
+        tz_tr = timezone(timedelta(hours=3))
+        today = datetime.now(tz_tr).date()
         end_date = today + timedelta(days=days_ahead)
         
         query = """
