@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
+ultimate_predictor.py - Tüm analitik tabloları ve HAKEM İSTATİSTİKLERİNİ kullanarak maç tahmini yapan gelişmiş algoritma.
 Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) - Sadece Bugün ve Yarın
-Eklenen Özellik: Cron için satır sayısı kontrolü ve başarısız durumlarda otomatik tekrar mekanizması.
-Timezone Güncellemesi: GitHub UTC saati yerine Türkiye saati (UTC+3) baz alınmıştır.
+Eklenen Özellik: Hakem istatistiklerinin beklenen gollere (Expected Goals) yansıtılması.
+Timezone Güncellemesi: Türkiye saati (UTC+3) baz alınmıştır.
 """
 
 import mysql.connector
@@ -75,6 +75,15 @@ def get_team_stat(cursor, team_name: str, tournament_id: int, venue: str, table:
         default_data[key] = 0
     return default_data
 
+def get_referee_stat(cursor, referee_name: str) -> Dict[str, Any]:
+    """Veritabanından hakem istatistiklerini çeker."""
+    if not referee_name:
+        return {}
+    query = "SELECT * FROM referee_analytics WHERE referee_name = %s"
+    cursor.execute(query, (referee_name,))
+    row = cursor.fetchone()
+    return row if row else {}
+
 # ======================== ANA TAHMİN SINIFI ========================
 class UltimatePredictor:
     def __init__(self, db_config):
@@ -91,14 +100,11 @@ class UltimatePredictor:
         self.conn.close()
 
     def get_prediction_count(self) -> int:
-        """Veritabanındaki toplam tahmin (satır) sayısını döndürür."""
         self.cur.execute("SELECT COUNT(*) as count FROM match_predictions")
         row = self.cur.fetchone()
         return row['count'] if row else 0
 
     def get_upcoming_matches(self, days_ahead: int = 1) -> list:
-        # Sadece BUGÜN ve YARIN (today + 1 gün) arasındaki BAŞLAMAMIŞ maçlar
-        # Timezone Ayarı: datetime.now(tz_tr).date() kullanılarak GitHub'ın UTC saati yerine Türkiye saati baz alındı.
         tz_tr = timezone(timedelta(hours=3))
         today = datetime.now(tz_tr).date()
         end_date = today + timedelta(days=days_ahead)
@@ -127,7 +133,7 @@ class UltimatePredictor:
 
     def compute_expected_goals(self, home_stats: Dict, away_stats: Dict,
                                league_stats: Dict, form_home: Dict, form_away: Dict,
-                               eff_home: Dict, eff_away: Dict) -> Tuple[float, float]:
+                               eff_home: Dict, eff_away: Dict, ref_stats: Dict = None) -> Tuple[float, float]:
         league_avg_home = league_stats["avg_goals_home"]
         league_avg_away = league_stats["avg_goals_away"]
 
@@ -164,6 +170,30 @@ class UltimatePredictor:
         expected_home *= (1 - 0.2 * (away_save - 0.7))
         expected_away *= (1 - 0.2 * (home_save - 0.7))
 
+        # ================= HAKEM ETKİSİ =================
+        if ref_stats:
+            # 1. Toplam Gol Etkisi
+            avg_ref_goals = ref_stats.get("avg_goals_match", 0)
+            if avg_ref_goals > 0:
+                league_total_avg = league_avg_home + league_avg_away
+                if league_total_avg == 0: league_total_avg = 2.5
+                
+                goal_ratio = avg_ref_goals / league_total_avg
+                goal_multiplier = 1.0 + ((goal_ratio - 1.0) * 0.10) 
+                expected_home *= goal_multiplier
+                expected_away *= goal_multiplier
+
+            # 2. Taraf Etkisi
+            home_win_pct = ref_stats.get("home_win_pct", 45.0)
+            away_win_pct = ref_stats.get("away_win_pct", 30.0)
+            
+            if home_win_pct > 45.0:
+                expected_home *= (1.0 + ((home_win_pct - 45.0) / 100) * 0.05)
+            
+            if away_win_pct > 30.0:
+                expected_away *= (1.0 + ((away_win_pct - 30.0) / 100) * 0.05)
+        # =================================================
+
         expected_home = max(0.1, expected_home)
         expected_away = max(0.1, expected_away)
 
@@ -174,6 +204,7 @@ class UltimatePredictor:
         home_team = match["home_team"]
         away_team = match["away_team"]
         tournament_id = match["tournament_id"]
+        referee = match.get("referee")
 
         league_stats = self.get_league_stats(tournament_id)
 
@@ -199,9 +230,11 @@ class UltimatePredictor:
         if not away_eff.get("conversion_rate_pct"):
             away_eff = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct"])
 
+        ref_stats = get_referee_stat(self.cur, referee) if referee else {}
+
         lambda_home, lambda_away = self.compute_expected_goals(
             home_analytics, away_analytics, league_stats,
-            home_form, away_form, home_eff, away_eff
+            home_form, away_form, home_eff, away_eff, ref_stats
         )
 
         max_goals = 10
@@ -371,7 +404,6 @@ if __name__ == "__main__":
                 print("\n[BAŞARILI] Yeni tahminler başarıyla kaydedildi. İşlem tamamlandı.")
                 break
             else:
-                # Yeni kayıt eklenmediyse, gerçekten maç mı yok yoksa hata mı var kontrol edelim
                 bekleyen_maclar = predictor.get_upcoming_matches(days_ahead=1)
                 
                 if len(bekleyen_maclar) == 0:
