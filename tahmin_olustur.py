@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-ultimate_predictor.py - Tüm analitik tabloları ve HAKEM İSTATİSTİKLERİNİ kullanarak maç tahmini yapan gelişmiş algoritma.
-Güncelleme: Yeni Marketler (1.5 Üst, 3.5 Alt, 1X, X2, KG Var) - Sadece Bugün ve Yarın
-Eklenen Özellik: Hakem istatistiklerinin beklenen gollere (Expected Goals) yansıtılması.
+ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
+Güncelleme: Hakem, İlk Yarı, İkinci Yarı, Baskı Endeksi ve ROI(Kârlılık) verileri Poisson hesaplamasına dahil edildi.
 Timezone Güncellemesi: Türkiye saati (UTC+3) baz alınmıştır.
 """
 
@@ -84,6 +83,17 @@ def get_referee_stat(cursor, referee_name: str) -> Dict[str, Any]:
     row = cursor.fetchone()
     return row if row else {}
 
+def get_odds_roi_stat(cursor, team_name: str, tournament_id: int, market: str) -> float:
+    """Belirtilen takımın belirli bir marketteki genel ROI (Kârlılık) ortalamasını çeker."""
+    query = """
+        SELECT AVG(yield_roi_pct) as avg_roi 
+        FROM odds_performance_analytics 
+        WHERE filter_type = 'Team' AND team_name = %s AND tournament_id = %s AND market = %s
+    """
+    cursor.execute(query, (team_name, tournament_id, market))
+    row = cursor.fetchone()
+    return row['avg_roi'] if row and row['avg_roi'] else 0.0
+
 # ======================== ANA TAHMİN SINIFI ========================
 class UltimatePredictor:
     def __init__(self, db_config):
@@ -131,12 +141,15 @@ class UltimatePredictor:
             }
         return {"avg_goals_home": 1.2, "avg_goals_away": 1.0}
 
-    def compute_expected_goals(self, home_stats: Dict, away_stats: Dict,
-                               league_stats: Dict, form_home: Dict, form_away: Dict,
-                               eff_home: Dict, eff_away: Dict, ref_stats: Dict = None) -> Tuple[float, float]:
+    def compute_expected_goals(self, home_stats: Dict, away_stats: Dict, league_stats: Dict, 
+                               form_home: Dict, form_away: Dict, eff_home: Dict, eff_away: Dict, 
+                               ref_stats: Dict, ht_home: Dict, ht_away: Dict, sh_home: Dict, sh_away: Dict, 
+                               roi_home: float, roi_away: float) -> Tuple[float, float]:
+        
         league_avg_home = league_stats["avg_goals_home"]
         league_avg_away = league_stats["avg_goals_away"]
 
+        # Temel Hücum/Savunma Gücü Hesaplaması
         home_avg_for = home_stats.get("goals_for_home", home_stats.get("goals_for", 0)) / max(1, home_stats.get("matches_played_home", home_stats.get("matches_played", 1)))
         home_avg_against = home_stats.get("goals_against_home", home_stats.get("goals_against", 0)) / max(1, home_stats.get("matches_played_home", home_stats.get("matches_played", 1)))
         away_avg_for = away_stats.get("goals_for_away", away_stats.get("goals_for", 0)) / max(1, away_stats.get("matches_played_away", away_stats.get("matches_played", 1)))
@@ -150,6 +163,7 @@ class UltimatePredictor:
         expected_home = home_attack * away_defense * league_avg_home
         expected_away = away_attack * home_defense * league_avg_away
 
+        # ================= FORM VE SERİ ETKİSİ =================
         home_scoring_streak = form_home.get("current_scoring_streak", 0)
         away_scoring_streak = form_away.get("current_scoring_streak", 0)
         expected_home *= (1 + 0.05 * home_scoring_streak)
@@ -160,6 +174,7 @@ class UltimatePredictor:
         expected_home *= (1 - 0.05 * away_clean_streak)
         expected_away *= (1 - 0.05 * home_clean_streak)
 
+        # ================= VERİMLİLİK ETKİSİ =================
         home_conv = eff_home.get("conversion_rate_pct", 0) / 100
         away_conv = eff_away.get("conversion_rate_pct", 0) / 100
         expected_home *= (1 + 0.2 * (home_conv - 0.1))
@@ -170,9 +185,36 @@ class UltimatePredictor:
         expected_home *= (1 - 0.2 * (away_save - 0.7))
         expected_away *= (1 - 0.2 * (home_save - 0.7))
 
+        # ================= YENİ: BASKI ENDEKSİ (PRESSURE INDEX) ETKİSİ =================
+        # Ortalama bir maçta baskı endeksi 85 kabul edilmiştir. 85'in üzerindeki her 5 puan, beklenen golü %1 artırır. Maksimum %10 sınır.
+        p_idx_h = eff_home.get("pressure_index", 85.0)
+        p_idx_a = eff_away.get("pressure_index", 85.0)
+        
+        if p_idx_h > 85.0:
+            expected_home *= (1.0 + min(0.10, (p_idx_h - 85.0) * 0.002))
+        if p_idx_a > 85.0:
+            expected_away *= (1.0 + min(0.10, (p_idx_a - 85.0) * 0.002))
+
+        # ================= YENİ: İLK/İKİNCİ YARI (AÇIK OYUN) ETKİSİ =================
+        # Eğer iki takımın da maçlarında hem ilk hem ikinci yarılarda yüksek "Karşılıklı Gol" (BTTS) oluyorsa, oyun daha gollü geçmeye müsaittir.
+        ht_btts_h = ht_home.get("ht_btts_yes_pct", 0)
+        ht_btts_a = ht_away.get("ht_btts_yes_pct", 0)
+        sh_btts_h = sh_home.get("sh_btts_yes_pct", 0)
+        sh_btts_a = sh_away.get("sh_btts_yes_pct", 0)
+        
+        if (ht_btts_h + sh_btts_h) > 60 and (ht_btts_a + sh_btts_a) > 60:
+            expected_home *= 1.05
+            expected_away *= 1.05
+
+        # ================= YENİ: PİYASA ROI (KÂRLILIK) ETKİSİ =================
+        # Pozitif ROI, takımın piyasa beklentilerinin (oranların) üzerinde performans gösterdiğini kanıtlar. Değerlidir.
+        if roi_home > 0:
+            expected_home *= 1.03
+        if roi_away > 0:
+            expected_away *= 1.03
+
         # ================= HAKEM ETKİSİ =================
         if ref_stats:
-            # 1. Toplam Gol Etkisi
             avg_ref_goals = ref_stats.get("avg_goals_match", 0)
             if avg_ref_goals > 0:
                 league_total_avg = league_avg_home + league_avg_away
@@ -183,17 +225,15 @@ class UltimatePredictor:
                 expected_home *= goal_multiplier
                 expected_away *= goal_multiplier
 
-            # 2. Taraf Etkisi
             home_win_pct = ref_stats.get("home_win_pct", 45.0)
             away_win_pct = ref_stats.get("away_win_pct", 30.0)
             
             if home_win_pct > 45.0:
                 expected_home *= (1.0 + ((home_win_pct - 45.0) / 100) * 0.05)
-            
             if away_win_pct > 30.0:
                 expected_away *= (1.0 + ((away_win_pct - 30.0) / 100) * 0.05)
-        # =================================================
 
+        # Minimum gol sınırı
         expected_home = max(0.1, expected_home)
         expected_away = max(0.1, expected_away)
 
@@ -206,16 +246,18 @@ class UltimatePredictor:
         tournament_id = match["tournament_id"]
         referee = match.get("referee")
 
+        # Lig Ortalamaları
         league_stats = self.get_league_stats(tournament_id)
 
+        # Takım Temel İstatistikleri
         home_analytics = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_analytics", ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
         away_analytics = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_analytics", ["goals_for as goals_for_away", "goals_against as goals_against_away", "matches_played as matches_played_away"])
-        
         if not home_analytics["matches_played_home"]:
             home_analytics = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_analytics", ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
         if not away_analytics["matches_played_away"]:
             away_analytics = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_analytics", ["goals_for as goals_for_away", "goals_against as goals_against_away", "matches_played as matches_played_away"])
 
+        # Takım Form / Seri Durumları
         home_form = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak", "points_last_5"])
         away_form = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak", "points_last_5"])
         if not home_form.get("points_last_5"):
@@ -223,18 +265,38 @@ class UltimatePredictor:
         if not away_form.get("points_last_5"):
             away_form = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak", "points_last_5"])
 
-        home_eff = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct"])
-        away_eff = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct"])
+        # Verimlilik ve Baskı İstatistikleri
+        home_eff = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
+        away_eff = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
         if not home_eff.get("conversion_rate_pct"):
-            home_eff = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct"])
+            home_eff = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
         if not away_eff.get("conversion_rate_pct"):
-            away_eff = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct"])
+            away_eff = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
 
+        # İlk Yarı (HT) İstatistikleri
+        home_ht = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_half_time_analytics", ["ht_btts_yes_pct"])
+        away_ht = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_half_time_analytics", ["ht_btts_yes_pct"])
+        if not home_ht.get("ht_btts_yes_pct"): home_ht = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_half_time_analytics", ["ht_btts_yes_pct"])
+        if not away_ht.get("ht_btts_yes_pct"): away_ht = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_half_time_analytics", ["ht_btts_yes_pct"])
+
+        # İkinci Yarı (SH) İstatistikleri
+        home_sh = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_second_half_analytics", ["sh_btts_yes_pct"])
+        away_sh = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_second_half_analytics", ["sh_btts_yes_pct"])
+        if not home_sh.get("sh_btts_yes_pct"): home_sh = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_second_half_analytics", ["sh_btts_yes_pct"])
+        if not away_sh.get("sh_btts_yes_pct"): away_sh = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_second_half_analytics", ["sh_btts_yes_pct"])
+
+        # ROI / Piyasa Performansı
+        roi_home = get_odds_roi_stat(self.cur, home_team, tournament_id, "Match_Winner")
+        roi_away = get_odds_roi_stat(self.cur, away_team, tournament_id, "Match_Winner")
+
+        # Hakem İstatistikleri
         ref_stats = get_referee_stat(self.cur, referee) if referee else {}
 
+        # TÜM PARAMETRELERLE POISSON HESAPLAMASINI ÇALIŞTIR
         lambda_home, lambda_away = self.compute_expected_goals(
             home_analytics, away_analytics, league_stats,
-            home_form, away_form, home_eff, away_eff, ref_stats
+            home_form, away_form, home_eff, away_eff,
+            ref_stats, home_ht, away_ht, home_sh, away_sh, roi_home, roi_away
         )
 
         max_goals = 10
