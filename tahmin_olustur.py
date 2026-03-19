@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 ultimate_predictor.py - Tüm analitik tabloları kullanarak maç tahmini yapan gelişmiş algoritma.
-Güncelleme: Eksik veri koruması eklendi. Yeterli istatistiği (NULL) olmayan maçlara varsayılan değer ATANMAZ, o maçlar direkt ATLANIR.
+Güncelleme: Sadece SAF FUTBOL istatistikleri (Baskı, Hakem, Form, İY/İY Ritimleri) bırakıldı. Piyasa/ROI etkisi tahmin motorundan çıkarıldı.
+Hata Koruması: NULL (boş) veritabanı değerlerine karşı koruma aktiftir (Eksik verisi olan maçlar atlanır).
 Timezone Güncellemesi: Türkiye saati (UTC+3) baz alınmıştır.
 """
 
@@ -74,16 +75,6 @@ def get_referee_stat(cursor, referee_name: str) -> Dict[str, Any]:
     row = cursor.fetchone()
     return row if row else {}
 
-def get_odds_roi_stat(cursor, team_name: str, tournament_id: int, market: str) -> float:
-    query = """
-        SELECT AVG(yield_roi_pct) as avg_roi 
-        FROM odds_performance_analytics 
-        WHERE filter_type = 'Team' AND team_name = %s AND tournament_id = %s AND market = %s
-    """
-    cursor.execute(query, (team_name, tournament_id, market))
-    row = cursor.fetchone()
-    return row['avg_roi'] if row and row['avg_roi'] else 0.0
-
 # ======================== ANA TAHMİN SINIFI ========================
 class UltimatePredictor:
     def __init__(self, db_config):
@@ -133,8 +124,7 @@ class UltimatePredictor:
 
     def compute_expected_goals(self, home_stats: Dict, away_stats: Dict, league_stats: Dict, 
                                form_home: Dict, form_away: Dict, eff_home: Dict, eff_away: Dict, 
-                               ref_stats: Dict, ht_home: Dict, ht_away: Dict, sh_home: Dict, sh_away: Dict, 
-                               roi_home: float, roi_away: float) -> Tuple[float, float]:
+                               ref_stats: Dict, ht_home: Dict, ht_away: Dict, sh_home: Dict, sh_away: Dict) -> Tuple[float, float]:
         
         league_avg_home = league_stats["avg_goals_home"]
         league_avg_away = league_stats["avg_goals_away"]
@@ -194,12 +184,6 @@ class UltimatePredictor:
             expected_home *= 1.05
             expected_away *= 1.05
 
-        # ================= PİYASA ROI (KÂRLILIK) ETKİSİ =================
-        if roi_home > 0:
-            expected_home *= 1.03
-        if roi_away > 0:
-            expected_away *= 1.03
-
         # ================= HAKEM ETKİSİ =================
         if ref_stats:
             avg_ref_goals = ref_stats.get("avg_goals_match") or 0
@@ -236,7 +220,7 @@ class UltimatePredictor:
         # 1. Lig Ortalamaları Kontrolü
         league_stats = self.get_league_stats(tournament_id)
         if not league_stats:
-            return None # Lig verisi yoksa atla
+            return None 
 
         # 2. Takım Temel İstatistikleri Kontrolü
         home_analytics = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_analytics", ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
@@ -303,18 +287,14 @@ class UltimatePredictor:
            not away_sh or away_sh.get("sh_btts_yes_pct") is None:
             return None
 
-        # 7. ROI / Piyasa Performansı (Bunun boş olması normaldir, o yüzden 0.0 dönerse devam et)
-        roi_home = get_odds_roi_stat(self.cur, home_team, tournament_id, "Match_Winner")
-        roi_away = get_odds_roi_stat(self.cur, away_team, tournament_id, "Match_Winner")
-
-        # 8. Hakem İstatistikleri (Hakem olmak zorunda değil)
+        # 7. Hakem İstatistikleri (Hakem olmak zorunda değil)
         ref_stats = get_referee_stat(self.cur, referee) if referee else {}
 
         # ================= HESAPLAMA BAŞLIYOR =================
         lambda_home, lambda_away = self.compute_expected_goals(
             home_analytics, away_analytics, league_stats,
             home_form, away_form, home_eff, away_eff,
-            ref_stats, home_ht, away_ht, home_sh, away_sh, roi_home, roi_away
+            ref_stats, home_ht, away_ht, home_sh, away_sh
         )
 
         max_goals = 10
@@ -342,6 +322,7 @@ class UltimatePredictor:
         odds_u35 = match.get("odds_u35")
         odds_btts_yes = match.get("odds_btts_yes")
 
+        # Sadece Value Değerleri Matematiksel Olarak Veritabanı İçin Hesaplanır (en_iyi_tahminleri_kaydet.py kullanabilsin diye)
         value_1x = (prob_1x * odds_1x - 1) if odds_1x else None
         value_x2 = (prob_x2 * odds_x2 - 1) if odds_x2 else None
         value_o15 = (prob_over_15 * odds_o15 - 1) if odds_o15 else None
