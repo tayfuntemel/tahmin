@@ -9,7 +9,7 @@ env:
 on:
   schedule:
     # Türkiye Saati ile her gün 02:20'de çalışır (UTC 23:20)
-    - cron: '20 23 * * *'
+    - cron: '20 21 * * *'
   workflow_dispatch:
 
 jobs:
