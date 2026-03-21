@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
+import os
 import datetime as dt, time, json
 import mysql.connector
 from typing import Dict, Any, List
 from playwright.sync_api import sync_playwright
 
+# Bilgiler artık kodun içine yazılmıyor, güvenli bir şekilde GitHub Secrets'tan (Environment Variables) çekiliyor.
 CONFIG = {
     "db": {
-        "host": "netscout.fun",
-        "user": "netscout_veri",
-        "password": "i.34temel1",
-        "database": "netscout_veri",
-        "port": 3306
+        "host": os.getenv("DB_HOST"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "database": os.getenv("DB_NAME"),
+        "port": int(os.getenv("DB_PORT", 3306))
     },
     "api": {
         "base_url": "https://api.sofascore.com/api/v1",
