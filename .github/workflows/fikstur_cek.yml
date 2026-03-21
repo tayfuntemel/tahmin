@@ -9,7 +9,7 @@ env:
 on:
   schedule:
     # TR Saati ile 02:00 (UTC 23:00) ve 14:00 (UTC 11:00)
-    - cron: '0 21,11 * * *'
+    - cron: '0 23,11 * * *'
   workflow_dispatch: # Bu satır, manuel çalıştırmayı sağlar.
 
 jobs:
@@ -31,4 +31,10 @@ jobs:
           playwright install chromium
 
       - name: Fikstür Scriptini Çalıştır
+        env: # Şifrelerimizi koda aktarıyoruz
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
         run: python fikstur_cek.py
