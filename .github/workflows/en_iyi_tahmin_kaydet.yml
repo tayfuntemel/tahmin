@@ -1,14 +1,12 @@
 name: en_iyi_tahmin_kaydet
 
 # --- KESİN ÇÖZÜM: GLOBAL ENV ---
-# Ayarı buraya, en tepeye koyuyoruz ki tüm adımlar Node.js 24 ile çalışsın.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 # -------------------------------
 
 on:
   schedule:
-    # Türkiye Saati ile her gün 02:40'ta çalışır (UTC 23:40)
     - cron: '40 23 * * *'
   workflow_dispatch:
 
