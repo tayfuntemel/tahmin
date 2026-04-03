@@ -60,10 +60,66 @@ class BestBetAnalyzer:
         if self.cur: self.cur.close()
         if self.conn: self.conn.close()
 
+    # =========================================================
+    # V3 FİNAL - KUSURSUZ KARAR MEKANİZMASI
+    # =========================================================
+    def calculate_confidence_score(self, market, prob, odds, value, exp_home, exp_away):
+        # 1. ZEHİRLİ PAZAR: BTTS KESİN YASAK!
+        if market == 'BTTS':
+            return -999
+
+        score = prob
+        total_xg = exp_home + exp_away
+        xg_diff = exp_home - exp_away
+
+        # 2. Value Tuzağı Kontrolü
+        if value <= 0:
+            return -999
+        elif 0.01 <= value <= 0.10:
+            score += 15
+        elif 0.10 < value <= 0.18:
+            score += 5
+        elif value > 0.20:
+            score -= 25 
+
+        # 3. Oran Mantığı Kalkanı
+        if odds < 1.35:
+            score -= 40
+        elif 1.35 <= odds < 1.50:
+            score += 15
+        elif 1.50 <= odds <= 1.75:
+            score -= 30
+        elif odds > 1.75:
+            score += 5
+
+        # 4. xG Uyumu (1.5 Üst Oynama Şartı Zorlaştırıldı)
+        if market == 'O15':
+            if total_xg >= 2.8:
+                score += 15
+            else:
+                return -999 # Beklenen gol 2.8'in altındaysa 1.5 Üst oynama!
+        elif market == 'U35':
+            if total_xg <= 2.2:
+                score += 15
+            elif total_xg > 2.8:
+                score -= 20
+        elif market == '1X':
+            if xg_diff > 0.4:
+                score += 15
+            elif xg_diff < 0:
+                score -= 20
+        elif market == 'X2':
+            if xg_diff < -0.4:
+                score += 15
+            elif xg_diff > 0:
+                score -= 20
+
+        return score
+
     def process_best_bets(self):
         print("[EN İYİ TAHMİN] Henüz tahmini oluşturulmamış yeni maçlar aranıyor...")
         
-        # SADECE best_market_raw sütunu boş olan maçları ve yeni market oranlarını çekiyoruz
+        # MP.* zaten exp_goals_home ve exp_goals_away içeriyor.
         query = """
             SELECT MP.*, 
                    R.odds_1x, R.odds_x2, R.odds_o15, R.odds_u35, R.odds_btts_yes
@@ -78,7 +134,7 @@ class BestBetAnalyzer:
             print("[BİLGİ] Tahmin yapılacak yeni maç bulunamadı.")
             return
 
-        print(f"[BİLGİ] {len(matches)} yeni maç için tahmin hesaplanıyor...")
+        print(f"[BİLGİ] {len(matches)} yeni maç için V3 Final Algoritması çalışıyor...")
 
         update_query = """
             UPDATE match_predictions 
@@ -88,6 +144,9 @@ class BestBetAnalyzer:
         
         count = 0
         for row in matches:
+            exp_home = float(row['exp_goals_home'] or 0)
+            exp_away = float(row['exp_goals_away'] or 0)
+
             markets = {
                 '1X':   {'prob': row['prob_1x'],   'value': row['value_1x'],   'odds': row['odds_1x'], 'name': '1x çifte şans'},
                 'X2':   {'prob': row['prob_x2'],   'value': row['value_x2'],   'odds': row['odds_x2'], 'name': 'x2 çifte şans'},
@@ -97,7 +156,7 @@ class BestBetAnalyzer:
             }
 
             best_bet = None
-            highest_value = -999
+            highest_score = 75.0 # Mükemmel barajımız
 
             for key, data in markets.items():
                 try:
@@ -107,17 +166,18 @@ class BestBetAnalyzer:
                 except (ValueError, TypeError):
                     continue
 
-                # Sadece oranı olanları (odds > 0) ve sistemde kâr ihtimali (value > 0) taşıyanları değerlendiriyoruz.
-                if odds > 0 and value > 0:
-                    if value > highest_value:
-                        highest_value = value
-                        best_bet = {
-                            'market_raw': key,
-                            'market_tr': data['name'],
-                            'prob': prob,
-                            'odds': odds,
-                            'value': value
-                        }
+                # Yeni V3 Final Puanlamasını Kullan
+                market_score = self.calculate_confidence_score(key, prob, odds, value, exp_home, exp_away)
+
+                if market_score > highest_score:
+                    highest_score = market_score
+                    best_bet = {
+                        'market_raw': key,
+                        'market_tr': data['name'],
+                        'prob': prob,
+                        'odds': odds,
+                        'value': value
+                    }
 
             if best_bet:
                 self.cur.execute(update_query, (
@@ -130,9 +190,9 @@ class BestBetAnalyzer:
                 ))
                 count += 1
             else:
-                self.cur.execute(update_query, ('NO_BET', 'Bahis Yok', 0, 0, 0, row['event_id']))
+                self.cur.execute(update_query, ('NO_BET', 'Bahis Yok (Riskli Bulundu)', 0, 0, 0, row['event_id']))
 
-        print(f"[BAŞARILI] Toplam {count} maça başarıyla tahmin atandı.")
+        print(f"[BAŞARILI] Toplam {count} maça başarıyla güvenli tahmin atandı.")
 
 if __name__ == "__main__":
     analyzer = BestBetAnalyzer(CONFIG["db"])
@@ -164,7 +224,6 @@ if __name__ == "__main__":
                 print("\n[BAŞARILI] Tablodaki 'updated_at' zamanı değişti, kayıtlar başarıyla güncellendi.")
                 break
             else:
-                # Zaman değişmediyse gerçekten bir hata mı oldu yoksa bekleyen maç mı kalmadı tekrar bakalım
                 kalan_mac = analyzer.get_pending_count()
                 if kalan_mac == 0:
                     print("\n[BİLGİ] Bekleyen tüm maçlar işlendi veya zaten kalmamıştı.")
