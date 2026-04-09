@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import mysql.connector
-import time
 import os
 
 CONFIG = {
@@ -48,10 +47,11 @@ class BestBetSelector:
         return self.cur.fetchone()['c']
 
     def select_best_bets(self):
-        # Sadece best_market_raw boş olanları al
         self.cur.execute("""
             SELECT mp.*, 
-                   r.odds_1x, r.odds_x2, r.odds_o15, r.odds_u35, r.odds_btts_yes
+                   r.odds_1, r.odds_x, r.odds_2,
+                   r.odds_o15, r.odds_o25, r.odds_o35,
+                   r.odds_btts_yes, r.odds_btts_no
             FROM match_predictions mp
             LEFT JOIN results_football r ON mp.event_id = r.event_id
             WHERE mp.best_market_raw IS NULL
@@ -70,11 +70,14 @@ class BestBetSelector:
         count = 0
         for row in rows:
             markets = {
-                '1X':   {'prob': row['prob_1x'],   'value': row['value_1x'],   'odds': row['odds_1x'], 'tr': '1x çifte şans'},
-                'X2':   {'prob': row['prob_x2'],   'value': row['value_x2'],   'odds': row['odds_x2'], 'tr': 'x2 çifte şans'},
-                'O15':  {'prob': row['prob_o15'],  'value': row['value_o15'],  'odds': row['odds_o15'], 'tr': '1.5 üst'},
-                'U35':  {'prob': row['prob_u35'],  'value': row['value_u35'],  'odds': row['odds_u35'], 'tr': '3.5 alt'},
-                'BTTS': {'prob': row['prob_btts'], 'value': row['value_btts'], 'odds': row['odds_btts_yes'], 'tr': 'kg var'}
+                'MS1':   {'prob': row['prob_ms1'],   'value': row['value_ms1'],   'odds': row['odds_1'], 'tr': 'ev sahibi galibiyeti'},
+                'MS0':   {'prob': row['prob_ms0'],   'value': row['value_ms0'],   'odds': row['odds_x'], 'tr': 'beraberlik'},
+                'MS2':   {'prob': row['prob_ms2'],   'value': row['value_ms2'],   'odds': row['odds_2'], 'tr': 'deplasman galibiyeti'},
+                'O15':   {'prob': row['prob_o15'],   'value': row['value_o15'],   'odds': row['odds_o15'], 'tr': '1.5 üst'},
+                'O25':   {'prob': row['prob_o25'],   'value': row['value_o25'],   'odds': row['odds_o25'], 'tr': '2.5 üst'},
+                'O35':   {'prob': row['prob_o35'],   'value': row['value_o35'],   'odds': row['odds_o35'], 'tr': '3.5 üst'},
+                'KG Var': {'prob': row['prob_btts_yes'], 'value': row['value_btts_yes'], 'odds': row['odds_btts_yes'], 'tr': 'kg var'},
+                'KG Yok': {'prob': row['prob_btts_no'],  'value': row['value_btts_no'],  'odds': row['odds_btts_no'], 'tr': 'kg yok'}
             }
 
             best = None
@@ -104,7 +107,6 @@ class BestBetSelector:
                 ))
                 count += 1
             else:
-                # Uygun bahis yoksa NO_BET yaz
                 self.cur.execute(update_sql, ('NO_BET', 'Bahis Yok (Düşük Oran/Value)', 0, 0, 0, row['event_id']))
         print(f"{count} maça en iyi bahis atandı.")
 
