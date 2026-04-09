@@ -82,16 +82,38 @@ class OddsAnalyzer:
             gh, ga = match['ft_home'], match['ft_away']
             home_won = gh > ga
             away_won = gh < ga
-            over25_won = (gh+ga) > 2.5
+            draw = gh == ga
+            over15 = (gh+ga) > 1.5
+            over25 = (gh+ga) > 2.5
+            over35 = (gh+ga) > 3.5
+            btts_yes = (gh>0 and ga>0)
+            btts_no = not btts_yes
 
-            self._process_market('League', None, t_id, 'Home_Win', match.get('odds_1'), home_won)
-            self._process_market('League', None, t_id, 'Away_Win', match.get('odds_2'), away_won)
-            self._process_market('League', None, t_id, 'Over_25', match.get('odds_o25'), over25_won)
+            # Lig bazlı
+            self._process_market('League', None, t_id, 'MS1', match.get('odds_1'), home_won)
+            self._process_market('League', None, t_id, 'MS2', match.get('odds_2'), away_won)
+            self._process_market('League', None, t_id, 'MS0', match.get('odds_x'), draw)
+            self._process_market('League', None, t_id, 'O15', match.get('odds_o15'), over15)
+            self._process_market('League', None, t_id, 'O25', match.get('odds_o25'), over25)
+            self._process_market('League', None, t_id, 'O35', match.get('odds_o35'), over35)
+            self._process_market('League', None, t_id, 'KG Var', match.get('odds_btts_yes'), btts_yes)
+            self._process_market('League', None, t_id, 'KG Yok', match.get('odds_btts_no'), btts_no)
 
-            self._process_market('Team', h_team, t_id, 'Match_Winner', match.get('odds_1'), home_won)
-            self._process_market('Team', h_team, t_id, 'Over_25', match.get('odds_o25'), over25_won)
-            self._process_market('Team', a_team, t_id, 'Match_Winner', match.get('odds_2'), away_won)
-            self._process_market('Team', a_team, t_id, 'Over_25', match.get('odds_o25'), over25_won)
+            # Takım bazlı (ev sahibi)
+            self._process_market('Team', h_team, t_id, 'MS1', match.get('odds_1'), home_won)
+            self._process_market('Team', h_team, t_id, 'O15', match.get('odds_o15'), over15)
+            self._process_market('Team', h_team, t_id, 'O25', match.get('odds_o25'), over25)
+            self._process_market('Team', h_team, t_id, 'O35', match.get('odds_o35'), over35)
+            self._process_market('Team', h_team, t_id, 'KG Var', match.get('odds_btts_yes'), btts_yes)
+            self._process_market('Team', h_team, t_id, 'KG Yok', match.get('odds_btts_no'), btts_no)
+
+            # Takım bazlı (deplasman)
+            self._process_market('Team', a_team, t_id, 'MS2', match.get('odds_2'), away_won)
+            self._process_market('Team', a_team, t_id, 'O15', match.get('odds_o15'), over15)
+            self._process_market('Team', a_team, t_id, 'O25', match.get('odds_o25'), over25)
+            self._process_market('Team', a_team, t_id, 'O35', match.get('odds_o35'), over35)
+            self._process_market('Team', a_team, t_id, 'KG Var', match.get('odds_btts_yes'), btts_yes)
+            self._process_market('Team', a_team, t_id, 'KG Yok', match.get('odds_btts_no'), btts_no)
 
         insert_query = """
             INSERT INTO odds_performance_analytics 
