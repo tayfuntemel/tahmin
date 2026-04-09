@@ -85,12 +85,10 @@ class BestBetSelector:
             for key, m in markets.items():
                 if m['odds'] is None or m['prob'] is None or m['value'] is None:
                     continue
-                # Sadece oranı 1.60 ve üzeri olanları değerlendir
                 if m['odds'] < 1.60:
                     continue
                 if m['value'] <= 0:
                     continue
-                # Güven skoru = value * (prob/100)
                 score = m['value'] * (m['prob'] / 100.0)
                 if score > best_score:
                     best_score = score
@@ -107,7 +105,7 @@ class BestBetSelector:
                 ))
                 count += 1
             else:
-                self.cur.execute(update_sql, ('NO_BET', 'Bahis Yok (Düşük Oran/Value)', 0, 0, 0, row['event_id']))
+                self.cur.execute(update_sql, ('NO_BET', 'bahis yok', 0, 0, 0, row['event_id']))
         print(f"{count} maça en iyi bahis atandı.")
 
 if __name__ == "__main__":
