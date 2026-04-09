@@ -44,4 +44,3 @@ jobs:
           python takim_xg_istatislikleri.py
           python lig_istatislik.py
           python hakem_istatislik.py
-          python oran_istatislikleri.py
