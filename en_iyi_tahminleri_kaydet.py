@@ -70,9 +70,9 @@ class BestBetSelector:
         count = 0
         for row in rows:
             markets = {
-                'MS1':   {'prob': row['prob_ms1'],   'value': row['value_ms1'],   'odds': row['odds_1'], 'tr': 'ev sahibi galibiyeti'},
-                'MS0':   {'prob': row['prob_ms0'],   'value': row['value_ms0'],   'odds': row['odds_x'], 'tr': 'beraberlik'},
-                'MS2':   {'prob': row['prob_ms2'],   'value': row['value_ms2'],   'odds': row['odds_2'], 'tr': 'deplasman galibiyeti'},
+                'MS1':   {'prob': row['prob_ms1'],   'value': row['value_ms1'],   'odds': row['odds_1'], 'tr': 'ms1'},
+                'MS0':   {'prob': row['prob_ms0'],   'value': row['value_ms0'],   'odds': row['odds_x'], 'tr': 'ms0'},
+                'MS2':   {'prob': row['prob_ms2'],   'value': row['value_ms2'],   'odds': row['odds_2'], 'tr': 'ms2'},
                 'O15':   {'prob': row['prob_o15'],   'value': row['value_o15'],   'odds': row['odds_o15'], 'tr': '1.5 üst'},
                 'O25':   {'prob': row['prob_o25'],   'value': row['value_o25'],   'odds': row['odds_o25'], 'tr': '2.5 üst'},
                 'O35':   {'prob': row['prob_o35'],   'value': row['value_o35'],   'odds': row['odds_o35'], 'tr': '3.5 üst'},
