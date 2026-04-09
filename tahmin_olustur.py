@@ -23,16 +23,22 @@ CREATE TABLE IF NOT EXISTS match_predictions (
     start_time_utc TIME NULL,
     exp_goals_home FLOAT NULL,
     exp_goals_away FLOAT NULL,
-    prob_1x FLOAT NULL,
-    prob_x2 FLOAT NULL,
+    prob_ms1 FLOAT NULL,
+    prob_ms0 FLOAT NULL,
+    prob_ms2 FLOAT NULL,
     prob_o15 FLOAT NULL,
-    prob_u35 FLOAT NULL,
-    prob_btts FLOAT NULL,
-    value_1x FLOAT NULL,
-    value_x2 FLOAT NULL,
+    prob_o25 FLOAT NULL,
+    prob_o35 FLOAT NULL,
+    prob_btts_yes FLOAT NULL,
+    prob_btts_no FLOAT NULL,
+    value_ms1 FLOAT NULL,
+    value_ms0 FLOAT NULL,
+    value_ms2 FLOAT NULL,
     value_o15 FLOAT NULL,
-    value_u35 FLOAT NULL,
-    value_btts FLOAT NULL,
+    value_o25 FLOAT NULL,
+    value_o35 FLOAT NULL,
+    value_btts_yes FLOAT NULL,
+    value_btts_no FLOAT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -64,10 +70,6 @@ class Predictor:
     def close(self):
         self.cur.close()
         self.conn.close()
-
-    def get_prediction_count(self):
-        self.cur.execute("SELECT COUNT(*) as c FROM match_predictions")
-        return self.cur.fetchone()['c']
 
     def get_upcoming_matches(self, days_ahead=1):
         tz_tr = timezone(timedelta(hours=3))
@@ -165,7 +167,6 @@ class Predictor:
         if not league_stats:
             return None
 
-        # Takım genel istatistikleri (Home/Away)
         home_stats = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_analytics",
                                    ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
         if not home_stats:
@@ -179,7 +180,6 @@ class Predictor:
         if not home_stats or not away_stats:
             return None
 
-        # Form verileri
         home_form = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_form_analytics",
                                   ["current_scoring_streak", "current_clean_sheet_streak"])
         if not home_form:
@@ -193,7 +193,6 @@ class Predictor:
         if not home_form or not away_form:
             return None
 
-        # Verimlilik
         home_eff = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_efficiency_analytics",
                                  ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
         if not home_eff:
@@ -207,7 +206,6 @@ class Predictor:
         if not home_eff or not away_eff:
             return None
 
-        # İlk yarı
         home_ht = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_half_time_analytics",
                                 ["ht_btts_yes_pct"])
         if not home_ht:
@@ -221,7 +219,6 @@ class Predictor:
         if not home_ht or not away_ht:
             return None
 
-        # İkinci yarı
         home_sh = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_second_half_analytics",
                                 ["sh_btts_yes_pct"])
         if not home_sh:
@@ -235,7 +232,6 @@ class Predictor:
         if not home_sh or not away_sh:
             return None
 
-        # Hakem
         ref_stats = {}
         if referee:
             self.cur.execute("SELECT * FROM referee_analytics WHERE referee_name = %s", (referee,))
@@ -246,7 +242,6 @@ class Predictor:
             home_eff, away_eff, home_ht, away_ht, home_sh, away_sh, ref_stats
         )
 
-        # Poisson ile skor olasılıkları
         max_goals = 10
         score_probs = {}
         total = 0.0
@@ -259,23 +254,32 @@ class Predictor:
             for k in score_probs:
                 score_probs[k] /= total
 
-        prob_1x = sum(p for (i,j),p in score_probs.items() if i >= j)
-        prob_x2 = sum(p for (i,j),p in score_probs.items() if i <= j)
+        prob_ms1 = sum(p for (i,j),p in score_probs.items() if i > j)
+        prob_ms0 = sum(p for (i,j),p in score_probs.items() if i == j)
+        prob_ms2 = sum(p for (i,j),p in score_probs.items() if i < j)
         prob_o15 = sum(p for (i,j),p in score_probs.items() if i+j > 1.5)
-        prob_u35 = sum(p for (i,j),p in score_probs.items() if i+j < 3.5)
-        prob_btts = sum(p for (i,j),p in score_probs.items() if i>0 and j>0)
+        prob_o25 = sum(p for (i,j),p in score_probs.items() if i+j > 2.5)
+        prob_o35 = sum(p for (i,j),p in score_probs.items() if i+j > 3.5)
+        prob_btts_yes = sum(p for (i,j),p in score_probs.items() if i>0 and j>0)
+        prob_btts_no = 1.0 - prob_btts_yes
 
-        odds_1x = match.get("odds_1x")
-        odds_x2 = match.get("odds_x2")
+        odds_ms1 = match.get("odds_1")
+        odds_ms0 = match.get("odds_x")
+        odds_ms2 = match.get("odds_2")
         odds_o15 = match.get("odds_o15")
-        odds_u35 = match.get("odds_u35")
-        odds_btts = match.get("odds_btts_yes")
+        odds_o25 = match.get("odds_o25")
+        odds_o35 = match.get("odds_o35")
+        odds_btts_yes = match.get("odds_btts_yes")
+        odds_btts_no = match.get("odds_btts_no")
 
-        value_1x = (prob_1x * odds_1x - 1) if odds_1x else None
-        value_x2 = (prob_x2 * odds_x2 - 1) if odds_x2 else None
+        value_ms1 = (prob_ms1 * odds_ms1 - 1) if odds_ms1 else None
+        value_ms0 = (prob_ms0 * odds_ms0 - 1) if odds_ms0 else None
+        value_ms2 = (prob_ms2 * odds_ms2 - 1) if odds_ms2 else None
         value_o15 = (prob_o15 * odds_o15 - 1) if odds_o15 else None
-        value_u35 = (prob_u35 * odds_u35 - 1) if odds_u35 else None
-        value_btts = (prob_btts * odds_btts - 1) if odds_btts else None
+        value_o25 = (prob_o25 * odds_o25 - 1) if odds_o25 else None
+        value_o35 = (prob_o35 * odds_o35 - 1) if odds_o35 else None
+        value_btts_yes = (prob_btts_yes * odds_btts_yes - 1) if odds_btts_yes else None
+        value_btts_no = (prob_btts_no * odds_btts_no - 1) if odds_btts_no else None
 
         return {
             "event_id": event_id,
@@ -285,16 +289,22 @@ class Predictor:
             "start_time_utc": match["start_time_utc"],
             "exp_goals_home": round(lambda_home, 2),
             "exp_goals_away": round(lambda_away, 2),
-            "prob_1x": round(prob_1x*100, 1),
-            "prob_x2": round(prob_x2*100, 1),
+            "prob_ms1": round(prob_ms1*100, 1),
+            "prob_ms0": round(prob_ms0*100, 1),
+            "prob_ms2": round(prob_ms2*100, 1),
             "prob_o15": round(prob_o15*100, 1),
-            "prob_u35": round(prob_u35*100, 1),
-            "prob_btts": round(prob_btts*100, 1),
-            "value_1x": round(value_1x, 2) if value_1x is not None else None,
-            "value_x2": round(value_x2, 2) if value_x2 is not None else None,
+            "prob_o25": round(prob_o25*100, 1),
+            "prob_o35": round(prob_o35*100, 1),
+            "prob_btts_yes": round(prob_btts_yes*100, 1),
+            "prob_btts_no": round(prob_btts_no*100, 1),
+            "value_ms1": round(value_ms1, 2) if value_ms1 is not None else None,
+            "value_ms0": round(value_ms0, 2) if value_ms0 is not None else None,
+            "value_ms2": round(value_ms2, 2) if value_ms2 is not None else None,
             "value_o15": round(value_o15, 2) if value_o15 is not None else None,
-            "value_u35": round(value_u35, 2) if value_u35 is not None else None,
-            "value_btts": round(value_btts, 2) if value_btts is not None else None
+            "value_o25": round(value_o25, 2) if value_o25 is not None else None,
+            "value_o35": round(value_o35, 2) if value_o35 is not None else None,
+            "value_btts_yes": round(value_btts_yes, 2) if value_btts_yes is not None else None,
+            "value_btts_no": round(value_btts_no, 2) if value_btts_no is not None else None
         }
 
     def save_prediction(self, pred):
@@ -302,13 +312,13 @@ class Predictor:
             INSERT INTO match_predictions (
                 event_id, home_team, away_team, start_utc, start_time_utc,
                 exp_goals_home, exp_goals_away,
-                prob_1x, prob_x2, prob_o15, prob_u35, prob_btts,
-                value_1x, value_x2, value_o15, value_u35, value_btts
+                prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o25, prob_o35, prob_btts_yes, prob_btts_no,
+                value_ms1, value_ms0, value_ms2, value_o15, value_o25, value_o35, value_btts_yes, value_btts_no
             ) VALUES (
                 %(event_id)s, %(home_team)s, %(away_team)s, %(start_utc)s, %(start_time_utc)s,
                 %(exp_goals_home)s, %(exp_goals_away)s,
-                %(prob_1x)s, %(prob_x2)s, %(prob_o15)s, %(prob_u35)s, %(prob_btts)s,
-                %(value_1x)s, %(value_x2)s, %(value_o15)s, %(value_u35)s, %(value_btts)s
+                %(prob_ms1)s, %(prob_ms0)s, %(prob_ms2)s, %(prob_o15)s, %(prob_o25)s, %(prob_o35)s, %(prob_btts_yes)s, %(prob_btts_no)s,
+                %(value_ms1)s, %(value_ms0)s, %(value_ms2)s, %(value_o15)s, %(value_o25)s, %(value_o35)s, %(value_btts_yes)s, %(value_btts_no)s
             )
         """
         self.cur.execute(sql, pred)
