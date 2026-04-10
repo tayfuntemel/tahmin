@@ -18,6 +18,7 @@ def get_connection():
     return mysql.connector.connect(**DB_CONFIG)
 
 def ensure_table():
+    """Tablo yoksa oluşturmaya çalış, yetki yoksa sadece uyar."""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -34,7 +35,7 @@ def ensure_table():
         logging.info("model_calibration tablosu hazır.")
         return True
     except Exception as e:
-        logging.error(f"Tablo oluşturulamadı: {e}")
+        logging.warning(f"Tablo oluşturulamadı (yetki sorunu?): {e}. Lütfen tabloyu manuel oluşturun.")
         return False
 
 def calculate_bias(days_back=30, min_matches=20):
@@ -84,7 +85,7 @@ def update_calibration_params(home_bias, away_bias):
         conn.close()
         logging.info(f"Bias güncellendi: home={new_home_bias:.3f}, away={new_away_bias:.3f}")
     except Exception as e:
-        logging.error(f"Bias güncellenemedi: {e}")
+        logging.error(f"Bias güncellenemedi (tablo yok veya yetki sorunu): {e}")
 
 def main():
     logging.info("Kalibrasyon başladı.")
@@ -92,8 +93,8 @@ def main():
     home_bias, away_bias = calculate_bias()
     if home_bias is not None and table_ok:
         update_calibration_params(home_bias, away_bias)
-    elif not table_ok:
-        logging.warning("Tablo sorunu nedeniyle bias güncellenemedi.")
+    elif home_bias is not None and not table_ok:
+        logging.warning("Tablo olmadığı için bias güncellenemedi, ancak hesaplama yapıldı.")
     logging.info("Kalibrasyon bitti.")
 
 if __name__ == "__main__":
