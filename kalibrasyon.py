@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""
-kalibrasyon.py
-Her gün çalışır. Son 30 günlük bitmiş maçlardaki xG bias'ını hesaplar
-ve model_calibration tablosunu günceller. Tablo yoksa otomatik oluşturur.
-"""
-
 import os
 import mysql.connector
 import logging
 from datetime import datetime, timedelta
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -28,26 +18,28 @@ def get_connection():
     return mysql.connector.connect(**DB_CONFIG)
 
 def ensure_table():
-    """model_calibration tablosunu yoksa oluştur."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_calibration (
-            param_name VARCHAR(64) PRIMARY KEY,
-            param_value FLOAT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
-    logging.info("model_calibration tablosu kontrol edildi/oluşturuldu.")
+    """model_calibration tablosunu yoksa oluştur (hataları yoksay)"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS model_calibration (
+                param_name VARCHAR(64) PRIMARY KEY,
+                param_value FLOAT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logging.info("model_calibration tablosu hazır.")
+    except Exception as e:
+        logging.warning(f"Tablo oluşturma hatası: {e}")
 
 def calculate_bias(days_back=30, min_matches=20):
     cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
-    
     query = """
         SELECT 
             AVG(r.ft_home - mp.exp_goals_home) AS home_bias,
@@ -64,26 +56,20 @@ def calculate_bias(days_back=30, min_matches=20):
     row = cursor.fetchone()
     cursor.close()
     conn.close()
-    
     if row and row['total_matches'] >= min_matches:
         home_bias = float(row['home_bias']) if row['home_bias'] is not None else 0.0
         away_bias = float(row['away_bias']) if row['away_bias'] is not None else 0.0
-        logging.info(f"Son {row['total_matches']} maç (son {days_back} gün) -> Ev bias: {home_bias:.3f}, Deplasman bias: {away_bias:.3f}")
+        logging.info(f"Son {row['total_matches']} maç -> Ev bias: {home_bias:.3f}, Deplasman bias: {away_bias:.3f}")
         return home_bias, away_bias
     else:
-        logging.warning(f"Yeterli veri yok (ihtiyaç: {min_matches}, mevcut: {row['total_matches'] if row else 0}). Bias güncellenmedi.")
+        logging.warning("Yetersiz veri, bias güncellenmedi.")
         return None, None
 
 def update_calibration_params(home_bias, away_bias):
     if home_bias is None or away_bias is None:
         return
-    
-    # Tabloyu tekrar kontrol et (güvenlik için)
-    ensure_table()
-    
     new_home_bias = -home_bias
     new_away_bias = -away_bias
-    
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -94,18 +80,15 @@ def update_calibration_params(home_bias, away_bias):
     conn.commit()
     cursor.close()
     conn.close()
-    
-    logging.info(f"Kalibrasyon güncellendi: home_xg_bias = {new_home_bias:.3f}, away_xg_bias = {new_away_bias:.3f}")
+    logging.info(f"Bias güncellendi: home={new_home_bias:.3f}, away={new_away_bias:.3f}")
 
 def main():
-    logging.info("Günlük kalibrasyon betiği başladı.")
-    ensure_table()   # Tabloyu oluştur
-    home_bias, away_bias = calculate_bias(days_back=30, min_matches=20)
+    logging.info("Kalibrasyon başladı.")
+    ensure_table()
+    home_bias, away_bias = calculate_bias()
     if home_bias is not None:
         update_calibration_params(home_bias, away_bias)
-    else:
-        logging.info("Bias güncellenmedi (yetersiz veri).")
-    logging.info("Kalibrasyon betiği tamamlandı.")
+    logging.info("Kalibrasyon bitti.")
 
 if __name__ == "__main__":
     main()
