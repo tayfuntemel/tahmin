@@ -63,39 +63,29 @@ class Predictor:
         self.conn.autocommit = True
         self.cur = self.conn.cursor(dictionary=True)
         self._init_db()
-        self._load_calibration_params()
+        
+        # YENİ: Sınıf başlatıldığında kalibrasyon değerlerini de çekiyoruz.
+        self.home_bias = 0.0
+        self.away_bias = 0.0
+        self._load_calibration_biases()
 
     def _init_db(self):
         self.cur.execute(SCHEMA_PREDICTIONS_TABLE)
-        # model_calibration tablosu yoksa oluştur (admin sayfası oluşturur ama emniyet)
-        self.cur.execute("""
-            CREATE TABLE IF NOT EXISTS model_calibration (
-                param_name VARCHAR(64) PRIMARY KEY,
-                param_value FLOAT NOT NULL
-            )
-        """)
 
-    def _load_calibration_params(self):
-        """Veritabanından tüm kalibrasyon parametrelerini yükler"""
-        self.params = {
-            'home_xg_bias': 0.0,
-            'away_xg_bias': 0.0,
-            'form_scoring_mult': 0.05,
-            'form_clean_sheet_mult': 0.05,
-            'conversion_impact': 0.2,
-            'save_impact': 0.2,
-            'pressure_threshold': 85,
-            'pressure_boost': 0.10,
-            'ht_sh_btts_boost': 1.05,
-            'ref_ratio_impact': 0.10,
-            'min_lambda': 0.1
-        }
+    # YENİ: Kalibrasyon tablosunu okuyan fonksiyon
+    def _load_calibration_biases(self):
         try:
             self.cur.execute("SELECT param_name, param_value FROM model_calibration")
             rows = self.cur.fetchall()
             for row in rows:
-                self.params[row['param_name']] = float(row['param_value'])
-        except:
+                if row['param_name'] == 'home_xg_bias':
+                    self.home_bias = float(row['param_value'])
+                elif row['param_name'] == 'away_xg_bias':
+                    self.away_bias = float(row['param_value'])
+            print(f"Kalibrasyon uygulandı: Ev Sahibi Bias: {self.home_bias:.3f}, Deplasman Bias: {self.away_bias:.3f}")
+        except mysql.connector.Error:
+            # Tablo henüz oluşturulmamışsa hata vermemesi için varsayılan 0.0 kullanırız
+            print("Kalibrasyon tablosu bulunamadı veya boş, varsayılan (0.0) değerlerle devam ediliyor.")
             pass
 
     def close(self):
@@ -142,35 +132,30 @@ class Predictor:
         expected_home = home_attack * away_defense * league_home
         expected_away = away_attack * home_defense * league_away
 
-        # Form etkileri (parametrelerle)
-        scoring_streak_h = min(3, max(-3, home_form.get("current_scoring_streak", 0)))
-        scoring_streak_a = min(3, max(-3, away_form.get("current_scoring_streak", 0)))
-        clean_sheet_h = min(3, max(-3, home_form.get("current_clean_sheet_streak", 0)))
-        clean_sheet_a = min(3, max(-3, away_form.get("current_clean_sheet_streak", 0)))
-        
-        expected_home *= (1 + self.params['form_scoring_mult'] * scoring_streak_h)
-        expected_away *= (1 + self.params['form_scoring_mult'] * scoring_streak_a)
-        expected_home *= (1 - self.params['form_clean_sheet_mult'] * clean_sheet_a)
-        expected_away *= (1 - self.params['form_clean_sheet_mult'] * clean_sheet_h)
+        # Form etkileri
+        expected_home *= (1 + 0.05 * home_form.get("current_scoring_streak", 0))
+        expected_away *= (1 + 0.05 * away_form.get("current_scoring_streak", 0))
+        expected_home *= (1 - 0.05 * away_form.get("current_clean_sheet_streak", 0))
+        expected_away *= (1 - 0.05 * home_form.get("current_clean_sheet_streak", 0))
 
         # Verimlilik etkisi
         home_conv = home_eff.get("conversion_rate_pct", 10) / 100
         away_conv = away_eff.get("conversion_rate_pct", 10) / 100
-        expected_home *= (1 + self.params['conversion_impact'] * (home_conv - 0.1))
-        expected_away *= (1 + self.params['conversion_impact'] * (away_conv - 0.1))
+        expected_home *= (1 + 0.2 * (home_conv - 0.1))
+        expected_away *= (1 + 0.2 * (away_conv - 0.1))
 
         home_save = home_eff.get("save_rate_pct", 70) / 100
         away_save = away_eff.get("save_rate_pct", 70) / 100
-        expected_home *= (1 - self.params['save_impact'] * (away_save - 0.7))
-        expected_away *= (1 - self.params['save_impact'] * (home_save - 0.7))
+        expected_home *= (1 - 0.2 * (away_save - 0.7))
+        expected_away *= (1 - 0.2 * (home_save - 0.7))
 
         # Baskı endeksi
         p_h = home_eff.get("pressure_index", 50)
         p_a = away_eff.get("pressure_index", 50)
-        if p_h > self.params['pressure_threshold']:
-            expected_home *= (1 + min(self.params['pressure_boost'], (p_h - self.params['pressure_threshold']) * 0.002))
-        if p_a > self.params['pressure_threshold']:
-            expected_away *= (1 + min(self.params['pressure_boost'], (p_a - self.params['pressure_threshold']) * 0.002))
+        if p_h > 85:
+            expected_home *= (1 + min(0.10, (p_h - 85) * 0.002))
+        if p_a > 85:
+            expected_away *= (1 + min(0.10, (p_a - 85) * 0.002))
 
         # İlk/İkinci yarı BTTS etkisi
         ht_btts_h = home_ht.get("ht_btts_yes_pct", 0)
@@ -178,8 +163,8 @@ class Predictor:
         sh_btts_h = home_sh.get("sh_btts_yes_pct", 0)
         sh_btts_a = away_sh.get("sh_btts_yes_pct", 0)
         if (ht_btts_h + sh_btts_h) > 60 and (ht_btts_a + sh_btts_a) > 60:
-            expected_home *= self.params['ht_sh_btts_boost']
-            expected_away *= self.params['ht_sh_btts_boost']
+            expected_home *= 1.05
+            expected_away *= 1.05
 
         # Hakem etkisi
         if ref_stats:
@@ -187,14 +172,15 @@ class Predictor:
             league_total = league_home + league_away
             if league_total > 0:
                 ratio = avg_ref_goals / league_total
-                expected_home *= (1 + (ratio - 1) * self.params['ref_ratio_impact'])
-                expected_away *= (1 + (ratio - 1) * self.params['ref_ratio_impact'])
+                expected_home *= (1 + (ratio - 1) * 0.10)
+                expected_away *= (1 + (ratio - 1) * 0.10)
 
-        # Bias düzeltmesi (kalibrasyon)
-        expected_home += self.params['home_xg_bias']
-        expected_away += self.params['away_xg_bias']
+        # YENİ: Hesaplanan ham beklenen gollere kalibrasyon (bias) düzeltmesini ekliyoruz.
+        # kalibrasyon.py dosyası bias'ı negatif hale getirdiği için burada doğrudan toplama işlemi yapıyoruz.
+        expected_home += self.home_bias
+        expected_away += self.away_bias
 
-        return max(self.params['min_lambda'], expected_home), max(self.params['min_lambda'], expected_away)
+        return max(0.1, expected_home), max(0.1, expected_away)
 
     def predict_match(self, match):
         event_id = match["event_id"]
