@@ -5,8 +5,8 @@ env:
 
 on:
   schedule:
-    # Her gün UTC 00:10 (Türkiye saati ile 03:10)
-    - cron: '10 0 * * *'
+    # Her gün UTC 21:10 (Türkiye saatiyle 00:10)
+    - cron: '10 21 * * *'
   workflow_dispatch:
 
 jobs:
