@@ -50,6 +50,8 @@ def calculate_bias(days_back=30, min_matches=20):
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        # Gerçek gol sayısından beklenen golü çıkarıyoruz.
+        # Sonuç negatifse model fazla tahmin etmiş, pozitifse az tahmin etmiş demektir.
         query = """
             SELECT 
                 AVG(r.ft_home - mp.exp_goals_home) AS home_bias,
@@ -82,10 +84,10 @@ def update_calibration_params(home_bias, away_bias):
     if home_bias is None or away_bias is None:
         return
     
-    # Modelin fazla tahmin etmesini engellemek için ters işaretlisini alıyoruz.
-    # Böylece tahmin_olustur.py içinde doğrudan "toplama" işlemi yapabileceğiz.
-    new_home_bias = -home_bias
-    new_away_bias = -away_bias
+    # DÜZELTİLMİŞ KISIM: SQL sorgusu zaten (Gerçek - Tahmin) yaptığı için,
+    # çıkan değeri olduğu gibi almalıyız. Eksi ile çarpmıyoruz!
+    new_home_bias = home_bias
+    new_away_bias = away_bias
     
     conn = None
     cursor = None
