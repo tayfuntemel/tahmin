@@ -23,6 +23,7 @@ class BestBetSelector:
         self.conn.autocommit = True
         self.cur = self.conn.cursor(dictionary=True)
         self._ensure_columns()
+        self._ensure_market_sample_table()
 
     def _ensure_columns(self):
         cols = [
@@ -38,6 +39,26 @@ class BestBetSelector:
             except:
                 pass
 
+    def _ensure_market_sample_table(self):
+        """Geçmişte her marketin kaç kez oynandığını tutan tablo"""
+        self.cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_sample_counts (
+                market_raw VARCHAR(32) PRIMARY KEY,
+                sample_count INT NOT NULL DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        """)
+        # Güncelle: bitmiş maçlardaki best_market_raw sayılarını hesapla
+        self.cur.execute("""
+            INSERT INTO market_sample_counts (market_raw, sample_count)
+            SELECT best_market_raw, COUNT(*) 
+            FROM match_predictions mp
+            JOIN results_football r ON mp.event_id = r.event_id
+            WHERE r.status = 'finished' AND best_market_raw IS NOT NULL AND best_market_raw != 'NO_BET'
+            GROUP BY best_market_raw
+            ON DUPLICATE KEY UPDATE sample_count = VALUES(sample_count)
+        """)
+
     def close(self):
         if self.cur: self.cur.close()
         if self.conn: self.conn.close()
@@ -47,6 +68,9 @@ class BestBetSelector:
         return self.cur.fetchone()['c']
 
     def select_best_bets(self):
+        # Minimum örneklem sayısı (20 maç altındaki marketleri oynama)
+        MIN_SAMPLE = 20
+
         self.cur.execute("""
             SELECT mp.*, 
                    r.odds_1, r.odds_x, r.odds_2,
@@ -60,6 +84,12 @@ class BestBetSelector:
         if not rows:
             print("Güncellenecek maç yok.")
             return
+
+        # Market sample count'ları çek
+        sample_counts = {}
+        self.cur.execute("SELECT market_raw, sample_count FROM market_sample_counts")
+        for row in self.cur.fetchall():
+            sample_counts[row['market_raw']] = row['sample_count']
 
         update_sql = """
             UPDATE match_predictions
@@ -83,6 +113,9 @@ class BestBetSelector:
             best = None
             best_score = -999
             for key, m in markets.items():
+                # Örneklem kontrolü
+                if sample_counts.get(key, 0) < MIN_SAMPLE:
+                    continue
                 if m['odds'] is None or m['prob'] is None or m['value'] is None:
                     continue
                 if m['odds'] < 1.60:
@@ -106,7 +139,7 @@ class BestBetSelector:
                 count += 1
             else:
                 self.cur.execute(update_sql, ('NO_BET', 'bahis yok', 0, 0, 0, row['event_id']))
-        print(f"{count} maça en iyi bahis atandı.")
+        print(f"{count} maça en iyi bahis atandı (minimum örneklem {MIN_SAMPLE}).")
 
 if __name__ == "__main__":
     selector = BestBetSelector(CONFIG["db"])
