@@ -2,7 +2,7 @@
 """
 kalibrasyon.py
 Her gün çalışır. Son 30 günlük bitmiş maçlardaki xG bias'ını hesaplar
-ve model_calibration tablosunu günceller.
+ve model_calibration tablosunu günceller. Tablo yoksa otomatik oluşturur.
 """
 
 import os
@@ -26,6 +26,22 @@ DB_CONFIG = {
 
 def get_connection():
     return mysql.connector.connect(**DB_CONFIG)
+
+def ensure_table():
+    """model_calibration tablosunu yoksa oluştur."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS model_calibration (
+            param_name VARCHAR(64) PRIMARY KEY,
+            param_value FLOAT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    logging.info("model_calibration tablosu kontrol edildi/oluşturuldu.")
 
 def calculate_bias(days_back=30, min_matches=20):
     cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
@@ -80,6 +96,7 @@ def update_calibration_params(home_bias, away_bias):
 
 def main():
     logging.info("Günlük kalibrasyon betiği başladı.")
+    ensure_table()   # <--- Tablo yoksa oluştur
     home_bias, away_bias = calculate_bias(days_back=30, min_matches=20)
     if home_bias is not None:
         update_calibration_params(home_bias, away_bias)
