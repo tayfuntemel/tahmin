@@ -18,7 +18,6 @@ def get_connection():
     return mysql.connector.connect(**DB_CONFIG)
 
 def ensure_table():
-    """model_calibration tablosunu yoksa oluştur (hataları yoksay)"""
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -33,8 +32,10 @@ def ensure_table():
         cursor.close()
         conn.close()
         logging.info("model_calibration tablosu hazır.")
+        return True
     except Exception as e:
-        logging.warning(f"Tablo oluşturma hatası: {e}")
+        logging.error(f"Tablo oluşturulamadı: {e}")
+        return False
 
 def calculate_bias(days_back=30, min_matches=20):
     cutoff_date = (datetime.now() - timedelta(days=days_back)).date()
@@ -70,24 +71,29 @@ def update_calibration_params(home_bias, away_bias):
         return
     new_home_bias = -home_bias
     new_away_bias = -away_bias
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO model_calibration (param_name, param_value)
-        VALUES ('home_xg_bias', %s), ('away_xg_bias', %s)
-        ON DUPLICATE KEY UPDATE param_value = VALUES(param_value)
-    """, (new_home_bias, new_away_bias))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    logging.info(f"Bias güncellendi: home={new_home_bias:.3f}, away={new_away_bias:.3f}")
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO model_calibration (param_name, param_value)
+            VALUES ('home_xg_bias', %s), ('away_xg_bias', %s)
+            ON DUPLICATE KEY UPDATE param_value = VALUES(param_value)
+        """, (new_home_bias, new_away_bias))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logging.info(f"Bias güncellendi: home={new_home_bias:.3f}, away={new_away_bias:.3f}")
+    except Exception as e:
+        logging.error(f"Bias güncellenemedi: {e}")
 
 def main():
     logging.info("Kalibrasyon başladı.")
-    ensure_table()
+    table_ok = ensure_table()
     home_bias, away_bias = calculate_bias()
-    if home_bias is not None:
+    if home_bias is not None and table_ok:
         update_calibration_params(home_bias, away_bias)
+    elif not table_ok:
+        logging.warning("Tablo sorunu nedeniyle bias güncellenemedi.")
     logging.info("Kalibrasyon bitti.")
 
 if __name__ == "__main__":
