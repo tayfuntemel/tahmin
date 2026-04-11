@@ -60,7 +60,7 @@ class Predictor:
         self.cur = self.conn.cursor(dictionary=True)
         self._init_db()
         
-        # YENİ: Sınıf başlatıldığında kalibrasyon değerlerini de çekiyoruz.
+        # Kalibrasyon değerlerini çek
         self.home_bias = 0.0
         self.away_bias = 0.0
         self._load_calibration_biases()
@@ -68,7 +68,6 @@ class Predictor:
     def _init_db(self):
         self.cur.execute(SCHEMA_PREDICTIONS_TABLE)
 
-    # YENİ: Kalibrasyon tablosunu okuyan fonksiyon
     def _load_calibration_biases(self):
         try:
             self.cur.execute("SELECT param_name, param_value FROM model_calibration")
@@ -80,7 +79,6 @@ class Predictor:
                     self.away_bias = float(row['param_value'])
             print(f"Kalibrasyon uygulandı: Ev Sahibi Bias: {self.home_bias:.3f}, Deplasman Bias: {self.away_bias:.3f}")
         except mysql.connector.Error:
-            # Tablo henüz oluşturulmamışsa hata vermemesi için varsayılan 0.0 kullanırız
             print("Kalibrasyon tablosu bulunamadı veya boş, varsayılan (0.0) değerlerle devam ediliyor.")
             pass
 
@@ -153,7 +151,7 @@ class Predictor:
         if p_a > 85:
             expected_away *= (1 + min(0.10, (p_a - 85) * 0.002))
 
-        # İlk/İkinci yarı BTTS etkisi (XG hesaplaması için bırakıldı, bahis marketi üretmez)
+        # İlk/İkinci yarı BTTS etkisi
         ht_btts_h = home_ht.get("ht_btts_yes_pct", 0)
         ht_btts_a = away_ht.get("ht_btts_yes_pct", 0)
         sh_btts_h = home_sh.get("sh_btts_yes_pct", 0)
@@ -171,7 +169,7 @@ class Predictor:
                 expected_home *= (1 + (ratio - 1) * 0.10)
                 expected_away *= (1 + (ratio - 1) * 0.10)
 
-        # YENİ: Hesaplanan ham beklenen gollere kalibrasyon (bias) düzeltmesini ekliyoruz.
+        # Kalibrasyon bias düzeltmesi
         expected_home += self.home_bias
         expected_away += self.away_bias
 
