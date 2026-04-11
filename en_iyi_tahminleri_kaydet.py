@@ -68,7 +68,6 @@ class BestBetSelector:
         """
         count = 0
         for row in rows:
-            # SADECE MAÇ SONUCU VE ÜST MARKETLERİ BIRAKILDI (KG ÇIKARILDI)
             markets = {
                 'MS1':   {'prob': row['prob_ms1'],   'value': row['value_ms1'],   'odds': row['odds_1'], 'tr': 'ms1'},
                 'MS0':   {'prob': row['prob_ms0'],   'value': row['value_ms0'],   'odds': row['odds_x'], 'tr': 'ms0'},
@@ -101,8 +100,8 @@ class BestBetSelector:
                 if m_value <= 0:
                     continue
                 
-                # KURAL 3: Altın Aralık Filtresi (%55 ile %75 arası değilse atla)
-                if m_prob < 55.0 or m_prob > 75.0:
+                # KURAL 3: Olasılık Filtresi (%45 ile %95 arası değilse atla)
+                if m_prob < 45.0 or m_prob > 95.0:
                     continue
                     
                 # Skor hesabı: Value ve Olasılığın dengeli çarpımı
