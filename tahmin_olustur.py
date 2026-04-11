@@ -27,14 +27,7 @@ CREATE TABLE IF NOT EXISTS match_predictions (
     prob_ms0 FLOAT NULL,
     prob_ms2 FLOAT NULL,
     prob_o15 FLOAT NULL,
-    prob_o25 FLOAT NULL,
     prob_o35 FLOAT NULL,
-    value_ms1 FLOAT NULL,
-    value_ms0 FLOAT NULL,
-    value_ms2 FLOAT NULL,
-    value_o15 FLOAT NULL,
-    value_o25 FLOAT NULL,
-    value_o35 FLOAT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -59,8 +52,6 @@ class Predictor:
         self.conn.autocommit = True
         self.cur = self.conn.cursor(dictionary=True)
         self._init_db()
-        
-        # Kalibrasyon değerlerini çek
         self.home_bias = 0.0
         self.away_bias = 0.0
         self._load_calibration_biases()
@@ -71,16 +62,14 @@ class Predictor:
     def _load_calibration_biases(self):
         try:
             self.cur.execute("SELECT param_name, param_value FROM model_calibration")
-            rows = self.cur.fetchall()
-            for row in rows:
+            for row in self.cur.fetchall():
                 if row['param_name'] == 'home_xg_bias':
                     self.home_bias = float(row['param_value'])
                 elif row['param_name'] == 'away_xg_bias':
                     self.away_bias = float(row['param_value'])
-            print(f"Kalibrasyon uygulandı: Ev Sahibi Bias: {self.home_bias:.3f}, Deplasman Bias: {self.away_bias:.3f}")
-        except mysql.connector.Error:
-            print("Kalibrasyon tablosu bulunamadı veya boş, varsayılan (0.0) değerlerle devam ediliyor.")
-            pass
+            print(f"Kalibrasyon: Ev {self.home_bias:.3f}, Deplasman {self.away_bias:.3f}")
+        except:
+            print("Kalibrasyon yok, varsayılan 0.0")
 
     def close(self):
         self.cur.close()
@@ -102,11 +91,8 @@ class Predictor:
         return self.cur.fetchall()
 
     def get_league_stats(self, tournament_id):
-        self.cur.execute("SELECT * FROM league_analytics WHERE tournament_id = %s", (tournament_id,))
-        row = self.cur.fetchone()
-        if row:
-            return {"avg_goals_home": row["avg_goals_home"], "avg_goals_away": row["avg_goals_away"]}
-        return None
+        self.cur.execute("SELECT avg_goals_home, avg_goals_away FROM league_analytics WHERE tournament_id = %s", (tournament_id,))
+        return self.cur.fetchone()
 
     def compute_expected_goals(self, home_stats, away_stats, league_stats, home_form, away_form,
                                home_eff, away_eff, home_ht, away_ht, home_sh, away_sh, ref_stats):
@@ -132,7 +118,7 @@ class Predictor:
         expected_home *= (1 - 0.05 * away_form.get("current_clean_sheet_streak", 0))
         expected_away *= (1 - 0.05 * home_form.get("current_clean_sheet_streak", 0))
 
-        # Verimlilik etkisi
+        # Verimlilik
         home_conv = home_eff.get("conversion_rate_pct", 10) / 100
         away_conv = away_eff.get("conversion_rate_pct", 10) / 100
         expected_home *= (1 + 0.2 * (home_conv - 0.1))
@@ -151,16 +137,13 @@ class Predictor:
         if p_a > 85:
             expected_away *= (1 + min(0.10, (p_a - 85) * 0.002))
 
-        # İlk/İkinci yarı BTTS etkisi
-        ht_btts_h = home_ht.get("ht_btts_yes_pct", 0)
-        ht_btts_a = away_ht.get("ht_btts_yes_pct", 0)
-        sh_btts_h = home_sh.get("sh_btts_yes_pct", 0)
-        sh_btts_a = away_sh.get("sh_btts_yes_pct", 0)
-        if (ht_btts_h + sh_btts_h) > 60 and (ht_btts_a + sh_btts_a) > 60:
+        # İlk/ikinci yarı BTTS
+        if (home_ht.get("ht_btts_yes_pct", 0) + home_sh.get("sh_btts_yes_pct", 0)) > 60 and \
+           (away_ht.get("ht_btts_yes_pct", 0) + away_sh.get("sh_btts_yes_pct", 0)) > 60:
             expected_home *= 1.05
             expected_away *= 1.05
 
-        # Hakem etkisi
+        # Hakem
         if ref_stats:
             avg_ref_goals = ref_stats.get("avg_goals_match", 2.5)
             league_total = league_home + league_away
@@ -169,91 +152,52 @@ class Predictor:
                 expected_home *= (1 + (ratio - 1) * 0.10)
                 expected_away *= (1 + (ratio - 1) * 0.10)
 
-        # Kalibrasyon bias düzeltmesi
         expected_home += self.home_bias
         expected_away += self.away_bias
-
         return max(0.1, expected_home), max(0.1, expected_away)
 
     def predict_match(self, match):
-        event_id = match["event_id"]
-        home_team = match["home_team"]
-        away_team = match["away_team"]
-        tournament_id = match["tournament_id"]
-        referee = match.get("referee")
-
-        league_stats = self.get_league_stats(tournament_id)
+        league_stats = self.get_league_stats(match["tournament_id"])
         if not league_stats:
             return None
 
-        home_stats = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_analytics",
+        home_stats = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Home", "team_analytics",
                                    ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
         if not home_stats:
-            home_stats = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_analytics",
+            home_stats = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Overall", "team_analytics",
                                        ["goals_for as goals_for_home", "goals_against as goals_against_home", "matches_played as matches_played_home"])
-        away_stats = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_analytics",
+        away_stats = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Away", "team_analytics",
                                    ["goals_for as goals_for_away", "goals_against as goals_against_away", "matches_played as matches_played_away"])
         if not away_stats:
-            away_stats = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_analytics",
+            away_stats = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Overall", "team_analytics",
                                        ["goals_for as goals_for_away", "goals_against as goals_against_away", "matches_played as matches_played_away"])
         if not home_stats or not away_stats:
             return None
 
-        home_form = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_form_analytics",
-                                  ["current_scoring_streak", "current_clean_sheet_streak"])
-        if not home_form:
-            home_form = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_form_analytics",
-                                      ["current_scoring_streak", "current_clean_sheet_streak"])
-        away_form = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_form_analytics",
-                                  ["current_scoring_streak", "current_clean_sheet_streak"])
-        if not away_form:
-            away_form = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_form_analytics",
-                                      ["current_scoring_streak", "current_clean_sheet_streak"])
-        if not home_form or not away_form:
-            return None
+        # Form, verimlilik, yarı istatistikleri (kısaltılmış)
+        home_form = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Home", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak"]) or \
+                    get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Overall", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak"])
+        away_form = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Away", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak"]) or \
+                    get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Overall", "team_form_analytics", ["current_scoring_streak", "current_clean_sheet_streak"])
+        home_eff = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Home", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"]) or \
+                   get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
+        away_eff = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Away", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"]) or \
+                   get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Overall", "team_efficiency_analytics", ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
+        home_ht = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Home", "team_half_time_analytics", ["ht_btts_yes_pct"]) or \
+                  get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Overall", "team_half_time_analytics", ["ht_btts_yes_pct"])
+        away_ht = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Away", "team_half_time_analytics", ["ht_btts_yes_pct"]) or \
+                  get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Overall", "team_half_time_analytics", ["ht_btts_yes_pct"])
+        home_sh = get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Home", "team_second_half_analytics", ["sh_btts_yes_pct"]) or \
+                  get_team_stat(self.cur, match["home_team"], match["tournament_id"], "Overall", "team_second_half_analytics", ["sh_btts_yes_pct"])
+        away_sh = get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Away", "team_second_half_analytics", ["sh_btts_yes_pct"]) or \
+                  get_team_stat(self.cur, match["away_team"], match["tournament_id"], "Overall", "team_second_half_analytics", ["sh_btts_yes_pct"])
 
-        home_eff = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_efficiency_analytics",
-                                 ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
-        if not home_eff:
-            home_eff = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_efficiency_analytics",
-                                     ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
-        away_eff = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_efficiency_analytics",
-                                 ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
-        if not away_eff:
-            away_eff = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_efficiency_analytics",
-                                     ["conversion_rate_pct", "save_rate_pct", "pressure_index"])
-        if not home_eff or not away_eff:
-            return None
-
-        home_ht = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_half_time_analytics",
-                                ["ht_btts_yes_pct"])
-        if not home_ht:
-            home_ht = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_half_time_analytics",
-                                    ["ht_btts_yes_pct"])
-        away_ht = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_half_time_analytics",
-                                ["ht_btts_yes_pct"])
-        if not away_ht:
-            away_ht = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_half_time_analytics",
-                                    ["ht_btts_yes_pct"])
-        if not home_ht or not away_ht:
-            return None
-
-        home_sh = get_team_stat(self.cur, home_team, tournament_id, "Home", "team_second_half_analytics",
-                                ["sh_btts_yes_pct"])
-        if not home_sh:
-            home_sh = get_team_stat(self.cur, home_team, tournament_id, "Overall", "team_second_half_analytics",
-                                    ["sh_btts_yes_pct"])
-        away_sh = get_team_stat(self.cur, away_team, tournament_id, "Away", "team_second_half_analytics",
-                                ["sh_btts_yes_pct"])
-        if not away_sh:
-            away_sh = get_team_stat(self.cur, away_team, tournament_id, "Overall", "team_second_half_analytics",
-                                    ["sh_btts_yes_pct"])
-        if not home_sh or not away_sh:
+        if not all([home_form, away_form, home_eff, away_eff, home_ht, away_ht, home_sh, away_sh]):
             return None
 
         ref_stats = {}
-        if referee:
-            self.cur.execute("SELECT * FROM referee_analytics WHERE referee_name = %s", (referee,))
+        if match.get("referee"):
+            self.cur.execute("SELECT avg_goals_match FROM referee_analytics WHERE referee_name = %s", (match["referee"],))
             ref_stats = self.cur.fetchone() or {}
 
         lambda_home, lambda_away = self.compute_expected_goals(
@@ -277,27 +221,12 @@ class Predictor:
         prob_ms0 = sum(p for (i,j),p in score_probs.items() if i == j)
         prob_ms2 = sum(p for (i,j),p in score_probs.items() if i < j)
         prob_o15 = sum(p for (i,j),p in score_probs.items() if i+j > 1.5)
-        prob_o25 = sum(p for (i,j),p in score_probs.items() if i+j > 2.5)
         prob_o35 = sum(p for (i,j),p in score_probs.items() if i+j > 3.5)
 
-        odds_ms1 = match.get("odds_1")
-        odds_ms0 = match.get("odds_x")
-        odds_ms2 = match.get("odds_2")
-        odds_o15 = match.get("odds_o15")
-        odds_o25 = match.get("odds_o25")
-        odds_o35 = match.get("odds_o35")
-
-        value_ms1 = (prob_ms1 * odds_ms1 - 1) if odds_ms1 else None
-        value_ms0 = (prob_ms0 * odds_ms0 - 1) if odds_ms0 else None
-        value_ms2 = (prob_ms2 * odds_ms2 - 1) if odds_ms2 else None
-        value_o15 = (prob_o15 * odds_o15 - 1) if odds_o15 else None
-        value_o25 = (prob_o25 * odds_o25 - 1) if odds_o25 else None
-        value_o35 = (prob_o35 * odds_o35 - 1) if odds_o35 else None
-
         return {
-            "event_id": event_id,
-            "home_team": home_team,
-            "away_team": away_team,
+            "event_id": match["event_id"],
+            "home_team": match["home_team"],
+            "away_team": match["away_team"],
             "start_utc": match["start_utc"],
             "start_time_utc": match["start_time_utc"],
             "exp_goals_home": round(lambda_home, 2),
@@ -306,31 +235,19 @@ class Predictor:
             "prob_ms0": round(prob_ms0*100, 1),
             "prob_ms2": round(prob_ms2*100, 1),
             "prob_o15": round(prob_o15*100, 1),
-            "prob_o25": round(prob_o25*100, 1),
-            "prob_o35": round(prob_o35*100, 1),
-            "value_ms1": round(value_ms1, 2) if value_ms1 is not None else None,
-            "value_ms0": round(value_ms0, 2) if value_ms0 is not None else None,
-            "value_ms2": round(value_ms2, 2) if value_ms2 is not None else None,
-            "value_o15": round(value_o15, 2) if value_o15 is not None else None,
-            "value_o25": round(value_o25, 2) if value_o25 is not None else None,
-            "value_o35": round(value_o35, 2) if value_o35 is not None else None
+            "prob_o35": round(prob_o35*100, 1)
         }
 
     def save_prediction(self, pred):
-        sql = """
-            INSERT INTO match_predictions (
-                event_id, home_team, away_team, start_utc, start_time_utc,
-                exp_goals_home, exp_goals_away,
-                prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o25, prob_o35,
-                value_ms1, value_ms0, value_ms2, value_o15, value_o25, value_o35
-            ) VALUES (
-                %(event_id)s, %(home_team)s, %(away_team)s, %(start_utc)s, %(start_time_utc)s,
-                %(exp_goals_home)s, %(exp_goals_away)s,
-                %(prob_ms1)s, %(prob_ms0)s, %(prob_ms2)s, %(prob_o15)s, %(prob_o25)s, %(prob_o35)s,
-                %(value_ms1)s, %(value_ms0)s, %(value_ms2)s, %(value_o15)s, %(value_o25)s, %(value_o35)s
-            )
-        """
-        self.cur.execute(sql, pred)
+        self.cur.execute("""
+            INSERT INTO match_predictions
+            (event_id, home_team, away_team, start_utc, start_time_utc,
+             exp_goals_home, exp_goals_away,
+             prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o35)
+            VALUES (%(event_id)s, %(home_team)s, %(away_team)s, %(start_utc)s, %(start_time_utc)s,
+                    %(exp_goals_home)s, %(exp_goals_away)s,
+                    %(prob_ms1)s, %(prob_ms0)s, %(prob_ms2)s, %(prob_o15)s, %(prob_o35)s)
+        """, pred)
 
     def run(self, days_ahead=1):
         matches = self.get_upcoming_matches(days_ahead)
@@ -340,7 +257,7 @@ class Predictor:
                 pred = self.predict_match(match)
                 if pred:
                     self.save_prediction(pred)
-                    print(f"Tahmin kaydedildi: {match['home_team']} vs {match['away_team']}")
+                    print(f"Kaydedildi: {match['home_team']} vs {match['away_team']}")
                 else:
                     print(f"Atlandı (yetersiz veri): {match['home_team']} vs {match['away_team']}")
             except Exception as e:
