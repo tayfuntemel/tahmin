@@ -95,11 +95,19 @@ class BestBetSelector:
                 except (ValueError, TypeError):
                     continue
 
+                # KURAL 1: Oran 1.60'ın altındaysa atla
                 if m_odds < 1.60:
                     continue
+                
+                # KURAL 2: Kârlı değilse (Value 0 veya altındaysa) atla
                 if m_value <= 0:
                     continue
+                
+                # KURAL 3: Altın Aralık Filtresi (%55 ile %75 arası değilse atla)
+                if m_prob < 55.0 or m_prob > 75.0:
+                    continue
                     
+                # Skor hesabı: Value ve Olasılığın dengeli çarpımı
                 score = m_value * (m_prob / 100.0)
                 if score > best_score:
                     best_score = score
