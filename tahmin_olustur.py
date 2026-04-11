@@ -29,16 +29,12 @@ CREATE TABLE IF NOT EXISTS match_predictions (
     prob_o15 FLOAT NULL,
     prob_o25 FLOAT NULL,
     prob_o35 FLOAT NULL,
-    prob_btts_yes FLOAT NULL,
-    prob_btts_no FLOAT NULL,
     value_ms1 FLOAT NULL,
     value_ms0 FLOAT NULL,
     value_ms2 FLOAT NULL,
     value_o15 FLOAT NULL,
     value_o25 FLOAT NULL,
     value_o35 FLOAT NULL,
-    value_btts_yes FLOAT NULL,
-    value_btts_no FLOAT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -157,7 +153,7 @@ class Predictor:
         if p_a > 85:
             expected_away *= (1 + min(0.10, (p_a - 85) * 0.002))
 
-        # İlk/İkinci yarı BTTS etkisi
+        # İlk/İkinci yarı BTTS etkisi (XG hesaplaması için bırakıldı, bahis marketi üretmez)
         ht_btts_h = home_ht.get("ht_btts_yes_pct", 0)
         ht_btts_a = away_ht.get("ht_btts_yes_pct", 0)
         sh_btts_h = home_sh.get("sh_btts_yes_pct", 0)
@@ -176,7 +172,6 @@ class Predictor:
                 expected_away *= (1 + (ratio - 1) * 0.10)
 
         # YENİ: Hesaplanan ham beklenen gollere kalibrasyon (bias) düzeltmesini ekliyoruz.
-        # kalibrasyon.py dosyası bias'ı negatif hale getirdiği için burada doğrudan toplama işlemi yapıyoruz.
         expected_home += self.home_bias
         expected_away += self.away_bias
 
@@ -286,8 +281,6 @@ class Predictor:
         prob_o15 = sum(p for (i,j),p in score_probs.items() if i+j > 1.5)
         prob_o25 = sum(p for (i,j),p in score_probs.items() if i+j > 2.5)
         prob_o35 = sum(p for (i,j),p in score_probs.items() if i+j > 3.5)
-        prob_btts_yes = sum(p for (i,j),p in score_probs.items() if i>0 and j>0)
-        prob_btts_no = 1.0 - prob_btts_yes
 
         odds_ms1 = match.get("odds_1")
         odds_ms0 = match.get("odds_x")
@@ -295,8 +288,6 @@ class Predictor:
         odds_o15 = match.get("odds_o15")
         odds_o25 = match.get("odds_o25")
         odds_o35 = match.get("odds_o35")
-        odds_btts_yes = match.get("odds_btts_yes")
-        odds_btts_no = match.get("odds_btts_no")
 
         value_ms1 = (prob_ms1 * odds_ms1 - 1) if odds_ms1 else None
         value_ms0 = (prob_ms0 * odds_ms0 - 1) if odds_ms0 else None
@@ -304,8 +295,6 @@ class Predictor:
         value_o15 = (prob_o15 * odds_o15 - 1) if odds_o15 else None
         value_o25 = (prob_o25 * odds_o25 - 1) if odds_o25 else None
         value_o35 = (prob_o35 * odds_o35 - 1) if odds_o35 else None
-        value_btts_yes = (prob_btts_yes * odds_btts_yes - 1) if odds_btts_yes else None
-        value_btts_no = (prob_btts_no * odds_btts_no - 1) if odds_btts_no else None
 
         return {
             "event_id": event_id,
@@ -321,16 +310,12 @@ class Predictor:
             "prob_o15": round(prob_o15*100, 1),
             "prob_o25": round(prob_o25*100, 1),
             "prob_o35": round(prob_o35*100, 1),
-            "prob_btts_yes": round(prob_btts_yes*100, 1),
-            "prob_btts_no": round(prob_btts_no*100, 1),
             "value_ms1": round(value_ms1, 2) if value_ms1 is not None else None,
             "value_ms0": round(value_ms0, 2) if value_ms0 is not None else None,
             "value_ms2": round(value_ms2, 2) if value_ms2 is not None else None,
             "value_o15": round(value_o15, 2) if value_o15 is not None else None,
             "value_o25": round(value_o25, 2) if value_o25 is not None else None,
-            "value_o35": round(value_o35, 2) if value_o35 is not None else None,
-            "value_btts_yes": round(value_btts_yes, 2) if value_btts_yes is not None else None,
-            "value_btts_no": round(value_btts_no, 2) if value_btts_no is not None else None
+            "value_o35": round(value_o35, 2) if value_o35 is not None else None
         }
 
     def save_prediction(self, pred):
@@ -338,13 +323,13 @@ class Predictor:
             INSERT INTO match_predictions (
                 event_id, home_team, away_team, start_utc, start_time_utc,
                 exp_goals_home, exp_goals_away,
-                prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o25, prob_o35, prob_btts_yes, prob_btts_no,
-                value_ms1, value_ms0, value_ms2, value_o15, value_o25, value_o35, value_btts_yes, value_btts_no
+                prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o25, prob_o35,
+                value_ms1, value_ms0, value_ms2, value_o15, value_o25, value_o35
             ) VALUES (
                 %(event_id)s, %(home_team)s, %(away_team)s, %(start_utc)s, %(start_time_utc)s,
                 %(exp_goals_home)s, %(exp_goals_away)s,
-                %(prob_ms1)s, %(prob_ms0)s, %(prob_ms2)s, %(prob_o15)s, %(prob_o25)s, %(prob_o35)s, %(prob_btts_yes)s, %(prob_btts_no)s,
-                %(value_ms1)s, %(value_ms0)s, %(value_ms2)s, %(value_o15)s, %(value_o25)s, %(value_o35)s, %(value_btts_yes)s, %(value_btts_no)s
+                %(prob_ms1)s, %(prob_ms0)s, %(prob_ms2)s, %(prob_o15)s, %(prob_o25)s, %(prob_o35)s,
+                %(value_ms1)s, %(value_ms0)s, %(value_ms2)s, %(value_o15)s, %(value_o25)s, %(value_o35)s
             )
         """
         self.cur.execute(sql, pred)
