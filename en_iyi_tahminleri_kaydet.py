@@ -25,6 +25,7 @@ class BestBetSelector:
         self._ensure_columns()
 
     def _ensure_columns(self):
+        # Hedef tabloda gerekli sütunların varlığını garanti et
         cols = [
             ("best_market_raw", "VARCHAR(32) NULL"),
             ("best_market_tr", "VARCHAR(64) NULL"),
@@ -47,10 +48,13 @@ class BestBetSelector:
         return self.cur.fetchone()['c']
 
     def select_best_bets(self):
+        # Sadece ihtiyacımız olan marketlerin oranlarını ve olasılıklarını çekiyoruz
         self.cur.execute("""
-            SELECT mp.*, 
-                   r.odds_1, r.odds_x, r.odds_2,
-                   r.odds_o15, r.odds_o25, r.odds_o35
+            SELECT mp.event_id,
+                   mp.prob_ms1, mp.prob_ms0, mp.prob_ms2,
+                   mp.prob_o15, mp.prob_o35,
+                   r.odds_1x, r.odds_12, r.odds_x2,
+                   r.odds_o15, r.odds_u35
             FROM match_predictions mp
             LEFT JOIN results_football r ON mp.event_id = r.event_id
             WHERE mp.best_market_raw IS NULL
@@ -68,63 +72,90 @@ class BestBetSelector:
         """
         count = 0
         for row in rows:
+            # 1X = Ev sahibi kazanır veya beraberlik
+            prob_1x = (row['prob_ms1'] + row['prob_ms0']) / 100.0  # ondalık olasılık (0..1)
+            # 12 = Ev sahibi veya deplasman kazanır (beraberlik yok)
+            prob_12 = (row['prob_ms1'] + row['prob_ms2']) / 100.0
+            # X2 = Deplasman kazanır veya beraberlik
+            prob_x2 = (row['prob_ms0'] + row['prob_ms2']) / 100.0
+            # 1.5 Üst (zaten doğrudan var)
+            prob_o15 = row['prob_o15'] / 100.0
+            # 3.5 Alt = 1 - (3.5 Üst olasılığı)
+            prob_u35 = (100.0 - row['prob_o35']) / 100.0 if row['prob_o35'] is not None else 0.0
+
             markets = {
-                'MS1':   {'prob': row['prob_ms1'],   'value': row['value_ms1'],   'odds': row['odds_1'], 'tr': 'ms1'},
-                'MS0':   {'prob': row['prob_ms0'],   'value': row['value_ms0'],   'odds': row['odds_x'], 'tr': 'ms0'},
-                'MS2':   {'prob': row['prob_ms2'],   'value': row['value_ms2'],   'odds': row['odds_2'], 'tr': 'ms2'},
-                'O15':   {'prob': row['prob_o15'],   'value': row['value_o15'],   'odds': row['odds_o15'], 'tr': '1.5 üst'},
-                'O25':   {'prob': row['prob_o25'],   'value': row['value_o25'],   'odds': row['odds_o25'], 'tr': '2.5 üst'},
-                'O35':   {'prob': row['prob_o35'],   'value': row['value_o35'],   'odds': row['odds_o35'], 'tr': '3.5 üst'}
+                '1X': {
+                    'prob': prob_1x,
+                    'odds': row['odds_1x'],
+                    'tr': '1x (çifte şans)'
+                },
+                '12': {
+                    'prob': prob_12,
+                    'odds': row['odds_12'],
+                    'tr': '12 (çifte şans)'
+                },
+                'X2': {
+                    'prob': prob_x2,
+                    'odds': row['odds_x2'],
+                    'tr': 'x2 (çifte şans)'
+                },
+                'O15': {
+                    'prob': prob_o15,
+                    'odds': row['odds_o15'],
+                    'tr': '1.5 üst'
+                },
+                'U35': {
+                    'prob': prob_u35,
+                    'odds': row['odds_u35'],
+                    'tr': '3.5 alt'
+                }
             }
 
             best = None
-            best_score = -999
-            
+            best_score = -999999  # en düşük değerden başla
+
             for key, m in markets.items():
-                if m['odds'] is None or m['prob'] is None or m['value'] is None:
+                # Oran veya olasılık eksikse atla
+                if m['odds'] is None or m['prob'] is None:
                     continue
-                
-                # Verileri zorla float (ondalık sayı) tipine çeviriyoruz
+
+                # Verileri float'a çevir (güvenlik)
                 try:
                     m_odds = float(m['odds'])
                     m_prob = float(m['prob'])
-                    m_value = float(m['value'])
                 except (ValueError, TypeError):
                     continue
 
-                # KURAL 1: Oran 1.60'ın altındaysa atla
-                if m_odds < 1.60:
-                    continue
-                
-                # KURAL 2: Kârlı değilse (Value 0 veya altındaysa) atla
-                if m_value <= 0:
-                    continue
-                
-                # KURAL 3: Olasılık Filtresi (%45 ile %95 arası değilse atla)
-                if m_prob < 45.0 or m_prob > 95.0:
-                    continue
-                    
-                # Skor hesabı: Value ve Olasılığın dengeli çarpımı
-                score = m_value * (m_prob / 100.0)
+                # Value = (Olasılık * Oran) - 1
+                m_value = (m_prob * m_odds) - 1.0
+
+                # HİÇBİR FİLTRE UYGULANMAZ:
+                # - Oran 1.60 altı olsa bile değerlendirilir.
+                # - Olasılık %45 altı veya %95 üstü olsa bile değerlendirilir.
+                # - Value negatif olsa bile değerlendirilir.
+
+                # Skor: Value ve olasılığın dengeli çarpımı (mevcut mantık korundu)
+                score = m_value * m_prob
                 if score > best_score:
                     best_score = score
                     best = {
                         'raw': key,
                         'tr': m['tr'],
-                        'prob': m_prob,
+                        'prob': round(m_prob * 100, 1),   # yüzde olarak sakla
                         'odds': m_odds,
-                        'value': m_value
+                        'value': round(m_value, 3)
                     }
-                    
+
             if best:
                 self.cur.execute(update_sql, (
                     best['raw'], best['tr'], best['prob'], best['odds'], best['value'], row['event_id']
                 ))
                 count += 1
             else:
+                # Hiçbir market geçerli değilse (örneğin tüm oranlar eksik) NO_BET ata
                 self.cur.execute(update_sql, ('NO_BET', 'bahis yok', 0, 0, 0, row['event_id']))
-                
-        print(f"{count} maça en iyi bahis atandı.")
+
+        print(f"{count} maça en iyi bahis atandı (marketler: 1X,12,X2,O15,U35).")
 
 if __name__ == "__main__":
     selector = BestBetSelector(CONFIG["db"])
