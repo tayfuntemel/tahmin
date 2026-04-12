@@ -1,14 +1,10 @@
 name: tahmin_olustur
 
-# --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
-# Ayarı buraya koyarak Runner'ı daha işe başlamadan Node.js 24 kullanmaya zorluyoruz.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-# -----------------------------------
 
 on:
   schedule:
-    # Türkiye Saati ile her gün 02:20'de çalışır (UTC 23:20)
     - cron: '20 21 * * *'
   workflow_dispatch:
 
@@ -27,11 +23,11 @@ jobs:
       - name: 📦 Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          # Pandas ve makine öğrenmesi kütüphaneleri buraya eklendi
+          # İŞTE BURASI KRİTİK: Tüm kütüphaneleri ekledik
           pip install mysql-connector-python pandas numpy scikit-learn joblib
           
       - name: 🚀 Tahminleri Oluştur
-        env: # Şifrelerimizi koda aktarıyoruz
+        env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
