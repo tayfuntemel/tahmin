@@ -1,14 +1,15 @@
 name: Model Eğitimi Güncelleme
 
+# GitHub Actions Node.js 24 uyarısını engellemek için
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   schedule:
-    # Her ayın 1'inde saat 00:00 UTC'de çalışır
-    # Dakika Saat Gün Ay HaftanınGünü
+    # Her ayın 1'inde, Türkiye saati ile sabah 03:00'te çalışır (UTC 00:00)
+    # Dakika Saat AyınGünü Ay HaftanınGünü
     - cron: '0 0 1 * *'
-  workflow_dispatch: # Manuel çalıştırma desteği
+  workflow_dispatch: # Actions sekmesinden manuel tetiklemeye izin verir
 
 jobs:
   model-egitme-sureci:
@@ -25,8 +26,8 @@ jobs:
       - name: Bağımlılıkları Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install mysql-connector-python
-          # Eğer başka kütüphaneler varsa buraya eklemelisiniz.
+          # Hata aldığın pandas ve diğer temel kütüphaneleri buraya ekledik
+          pip install mysql-connector-python pandas numpy scikit-learn
           
       - name: Eğitim Betiğini Çalıştır
         env:
