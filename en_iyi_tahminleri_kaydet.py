@@ -79,8 +79,8 @@ def select_best_bets():
             prob = float(m['prob'])
             value = (prob * odds) - 1.0
             
-            # YENİ FİLTRELER
-            if value > 0.05 and prob > 0.55 and odds >= 1.60:
+            # YENİ FİLTRELER: minimum oran 1.20'ye düşürüldü
+            if value > 0.05 and prob > 0.55 and odds >= 1.20:
                 if value > best_value:
                     best_value = value
                     best = {
@@ -100,7 +100,7 @@ def select_best_bets():
     conn.commit()
     cursor.close()
     conn.close()
-    print(f"{count} maça en iyi bahis atandı (filtre: value>0.05, prob>%55, odds≥1.60).")
+    print(f"{count} maça en iyi bahis atandı (filtre: value>0.05, prob>%55, odds≥1.20).")
 
 def main():
     ensure_columns()
