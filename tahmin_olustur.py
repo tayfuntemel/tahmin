@@ -22,6 +22,34 @@ MODEL_DIR = "models"
 def get_connection():
     return mysql.connector.connect(**CONFIG["db"])
 
+# --- YENİ EKLENEN FONKSİYON: TABLOYU OTOMATİK OLUŞTURUR ---
+def create_table_if_not_exists():
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = """
+    CREATE TABLE IF NOT EXISTS `match_predictions` (
+      `id` INT AUTO_INCREMENT PRIMARY KEY,
+      `event_id` INT NOT NULL UNIQUE,
+      `prob_ms1` FLOAT,
+      `prob_ms0` FLOAT,
+      `prob_ms2` FLOAT,
+      `prob_o15` FLOAT,
+      `prob_o35` FLOAT,
+      `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (`event_id`) REFERENCES `results_football`(`event_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+    try:
+        cursor.execute(query)
+        conn.commit()
+        print("Tablo kontrolü başarılı (match_predictions hazır).")
+    except Exception as e:
+        print(f"Tablo oluşturulurken hata: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+# --------------------------------------------------------
+
 def load_models():
     scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
     model_result = joblib.load(f"{MODEL_DIR}/result_model.pkl")
@@ -127,6 +155,10 @@ def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn.close()
 
 def main():
+    # --- YENİ EKLENEN KISIM: İşleme başlamadan önce tabloyu kontrol et ---
+    create_table_if_not_exists()
+    # ----------------------------------------------------------------------
+    
     scaler, model_result, model_o15, model_u35 = load_models()
     matches = get_upcoming_matches()
     print(f"{len(matches)} yeni maç tahmin edilecek.")
