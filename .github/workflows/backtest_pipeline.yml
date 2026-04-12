@@ -1,36 +1,40 @@
-name: Model Eğitimi - ZORLA KAYDET
+name: Sistem Guncelleme
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   schedule:
-    - cron: '0 0 1 * *' # Her ayın 1'inde gece yarısı UTC saatine göre çalışır
-  workflow_dispatch:    # GitHub arayüzünden manuel olarak butona basıp çalıştırmanı sağlar
+    # DİKKAT: Eski ayarında '0 0 1 * *' (Sadece ayın 1'i) yazıyordu.
+    # Eğer bu sistemin her gece çalışıp o günün maçlarını tahmin etmesini istiyorsan 
+    # aşağıdaki gibi '0 0 * * *' yapmalısın. Şimdilik her gece çalışacak şekilde ayarladım.
+    - cron: '0 0 * * *' 
+  workflow_dispatch:    # GitHub arayüzünden manuel "Run workflow" butonu
 
 permissions:
-  contents: write       # Botun repoya commit atabilmesi için yazma izni
+  contents: write       # Botun repoya modelleri yazma izni
 
 jobs:
-  model-egitme-sureci:
+  sistem-guncelleme-sureci:
     runs-on: ubuntu-latest
     steps:
       - name: Kodları Getir
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Push işlemlerinde çakışma olmaması için tüm git geçmişini çeker
+          fetch-depth: 0 # Push çakışmalarını önlemek için tüm geçmişi çeker
 
       - name: Python Ortamını Hazırla
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          # requirements.txt hatası vermemesi için cache bilerek eklenmedi!
 
       - name: Bağımlılıkları Yükle
         run: |
           python -m pip install --upgrade pip
           pip install mysql-connector-python pandas numpy scikit-learn joblib xgboost scipy
           
-      - name: İstatistikleri Hesapla ve Modeli Eğit
+      - name: Full Pipeline Çalıştır (İstatistik + Eğitim + Tahmin)
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -38,19 +42,22 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
-          python backtest_pipeline.py --mode stats
-          python backtest_pipeline.py --mode train
+          # --mode full komutu sırasıyla: 
+          # 1. İstatistikleri hesaplar 
+          # 2. T-1 verisiyle modeli eğitir 
+          # 3. Gelecek maçları tahmin edip veritabanına yazar
+          python backtest_pipeline.py --mode full
         
       - name: Modelleri Zorla Kaydet ve Pushla
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # models klasörünü .gitignore'da olsa bile -f parametresi ile zorla ekler
+          # models klasörünü zorla github'a ekle
           git add -f models/
           
-          # Eğer modellerde bir değişiklik yoksa hata vermemesi için || echo "Degisiklik yok" kullanıyoruz
-          git commit -m "🤖 [OTOMATİK] Yeni modeller eğitildi ve güncellendi" || echo "Degisiklik yok"
+          # Değişiklik yoksa (örneğin veri azlığından model eğitilemediyse) çökmemesi için koruma
+          git commit -m "🤖 [OTOMATİK] İstatistikler, modeller ve tahminler güncellendi" || echo "Degisiklik yok"
           
-          # Değişiklikleri main dalına gönderir
+          # Dosyaları repoya gönder
           git push origin HEAD:main
