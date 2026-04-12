@@ -22,7 +22,7 @@ MODEL_DIR = "models"
 def get_connection():
     return mysql.connector.connect(**CONFIG["db"])
 
-# --- YENİ EKLENEN FONKSİYON: TABLOYU OTOMATİK OLUŞTURUR ---
+# --- TABLOYU OTOMATİK OLUŞTURAN FONKSİYON ---
 def create_table_if_not_exists():
     conn = get_connection()
     cursor = conn.cursor()
@@ -48,7 +48,7 @@ def create_table_if_not_exists():
     finally:
         cursor.close()
         conn.close()
-# --------------------------------------------------------
+# --------------------------------------------
 
 def load_models():
     scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
@@ -76,7 +76,6 @@ def get_upcoming_matches():
     return df
 
 def get_features_for_match(row):
-    # Tek bir maç için özellik vektörü oluştur (aynı model_egit'teki gibi)
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     
@@ -89,29 +88,22 @@ def get_features_for_match(row):
     away_team = row['away_team']
     tour_id = row['tournament_id']
     
-    # Takım analizleri
     home_stats = get_stat(home_team, tour_id, 'Home', 'team_analytics', ['matches_played', 'goals_for', 'goals_against', 'wins', 'draws', 'losses', 'avg_possession', 'avg_shots', 'avg_shots_on'])
     away_stats = get_stat(away_team, tour_id, 'Away', 'team_analytics', ['matches_played', 'goals_for', 'goals_against', 'wins', 'draws', 'losses', 'avg_possession', 'avg_shots', 'avg_shots_on'])
-    # Form
     home_form = get_stat(home_team, tour_id, 'Home', 'team_form_analytics', ['points_last_5'])
     away_form = get_stat(away_team, tour_id, 'Away', 'team_form_analytics', ['points_last_5'])
-    # Verimlilik
     home_eff = get_stat(home_team, tour_id, 'Home', 'team_efficiency_analytics', ['conversion_rate_pct', 'save_rate_pct'])
     away_eff = get_stat(away_team, tour_id, 'Away', 'team_efficiency_analytics', ['conversion_rate_pct', 'save_rate_pct'])
-    # İlk yarı BTTS
     home_ht = get_stat(home_team, tour_id, 'Home', 'team_half_time_analytics', ['ht_btts_yes_pct'])
     away_ht = get_stat(away_team, tour_id, 'Away', 'team_half_time_analytics', ['ht_btts_yes_pct'])
-    # Lig
     cursor.execute("SELECT avg_goals_match, home_win_pct, draw_pct FROM league_analytics WHERE tournament_id = %s", (tour_id,))
     league = cursor.fetchone() or {}
-    # Hakem
     cursor.execute("SELECT avg_goals_match FROM referee_analytics WHERE referee_name = %s", (row['referee'],))
     ref = cursor.fetchone() or {}
     
     cursor.close()
     conn.close()
     
-    # Özellik sırası (model_egit'teki feature_cols ile aynı)
     features = [
         home_stats.get('matches_played', 0), home_stats.get('goals_for', 0), home_stats.get('goals_against', 0),
         home_stats.get('wins', 0), home_stats.get('draws', 0), home_stats.get('losses', 0),
@@ -126,20 +118,18 @@ def get_features_for_match(row):
         league.get('avg_goals_match', 2.5), league.get('home_win_pct', 45), league.get('draw_pct', 25),
         ref.get('avg_goals_match', 2.5)
     ]
-    # Eksik değerleri doldur (0 veya medyan)
     features = [0 if pd.isna(x) else x for x in features]
     return np.array(features).reshape(1, -1)
 
 def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn = get_connection()
     cursor = conn.cursor()
-    # Olasılıkları hesapla
-    prob_1x = prob_result[0][1] + prob_result[0][0]  # Ev+Beraberlik
-    prob_12 = prob_result[0][1] + prob_result[0][2]  # Ev+Deplasman
-    prob_x2 = prob_result[0][0] + prob_result[0][2]  # Beraberlik+Deplasman
+    prob_1x = prob_result[0][1] + prob_result[0][0]
+    prob_12 = prob_result[0][1] + prob_result[0][2]
+    prob_x2 = prob_result[0][0] + prob_result[0][2]
     
-    prob_o15_val = prob_o15[0][1]  # 1.5 üst olasılığı
-    prob_u35_val = 1 - prob_u35[0][1] if prob_u35[0][1] is not None else 0.5  # 3.5 alt = 1 - (3.5 üst)
+    prob_o15_val = prob_o15[0][1]
+    prob_u35_val = 1 - prob_u35[0][1] if prob_u35[0][1] is not None else 0.5
     
     cursor.execute("""
         INSERT INTO match_predictions
@@ -155,9 +145,8 @@ def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn.close()
 
 def main():
-    # --- YENİ EKLENEN KISIM: İşleme başlamadan önce tabloyu kontrol et ---
+    # İŞTE BURASI ÇOK ÖNEMLİ: Tabloyu oluşturacak fonksiyonu çağırıyoruz!
     create_table_if_not_exists()
-    # ----------------------------------------------------------------------
     
     scaler, model_result, model_o15, model_u35 = load_models()
     matches = get_upcoming_matches()
