@@ -23,7 +23,6 @@ jobs:
       - name: Bağımlılıkları Yükle
         run: |
           python -m pip install --upgrade pip
-          # Py dosyanın ihtiyaç duyduğu tüm kütüphaneler eklendi:
           pip install mysql-connector-python pandas numpy scikit-learn joblib
           
       - name: Eğitim Betiğini Çalıştır
