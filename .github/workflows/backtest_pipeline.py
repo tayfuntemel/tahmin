@@ -1,0 +1,58 @@
+name: Model Eğitimi - ZORLA KAYDET
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  schedule:
+    - cron: '0 0 1 * *' # Her ayın 1'inde gece yarısı UTC saatine göre çalışır
+  workflow_dispatch:    # GitHub arayüzünden manuel olarak butona basıp çalıştırmanı sağlar
+
+permissions:
+  contents: write       # Botun repoya commit atabilmesi için yazma izni
+
+jobs:
+  model-egitme-sureci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodları Getir
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Push işlemlerinde çakışma olmaması için tüm git geçmişini çeker
+
+      - name: Python Ortamını Hazırla
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'   # Pip kurulumlarını önbelleğe alarak sonraki çalışmaları hızlandırır
+
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          # xgboost ve scipy eklendi (Model eğitimi için şart!)
+          pip install mysql-connector-python pandas numpy scikit-learn joblib xgboost scipy
+          
+      - name: Eğitim Betiğini Çalıştır
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+        # NOT: Eğer önceki adımda birleştirdiğimiz kodu kullanıyorsan 
+        # burayı "python backtest_pipeline.py --mode train" olarak değiştir.
+        run: python model_egit.py
+        
+      - name: Modelleri Zorla Kaydet ve Pushla
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # models klasörünü .gitignore'da olsa bile -f parametresi ile zorla ekler
+          git add -f models/
+          
+          # Eğer modellerde bir değişiklik yoksa hata vermemesi için || echo "Degisiklik yok" kullanıyoruz
+          git commit -m "🤖 [OTOMATİK] Yeni modeller eğitildi ve güncellendi" || echo "Degisiklik yok"
+          
+          # Değişiklikleri main dalına gönderir
+          git push origin HEAD:main
