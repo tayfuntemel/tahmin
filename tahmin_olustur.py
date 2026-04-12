@@ -22,7 +22,6 @@ MODEL_DIR = "models"
 def get_connection():
     return mysql.connector.connect(**CONFIG["db"])
 
-# --- TABLOYU OTOMATİK OLUŞTURAN FONKSİYON ---
 def create_table_if_not_exists():
     conn = get_connection()
     cursor = conn.cursor()
@@ -48,7 +47,6 @@ def create_table_if_not_exists():
     finally:
         cursor.close()
         conn.close()
-# --------------------------------------------
 
 def load_models():
     scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
@@ -145,7 +143,7 @@ def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn.close()
 
 def main():
-    # İŞTE BURASI ÇOK ÖNEMLİ: Tabloyu oluşturacak fonksiyonu çağırıyoruz!
+    # TABLO OLUŞTURMA FONKSİYONU ÇAĞRILIYOR
     create_table_if_not_exists()
     
     scaler, model_result, model_o15, model_u35 = load_models()
