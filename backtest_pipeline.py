@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-backtest_pipeline_fixed.py - Tam ve hatasız backtest pipeline'ı.
-Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır, model T-1 verisiyle eğitilir, T günündeki maçlar test edilir.
+backtest_pipeline_original.py - Tam ve hatasız backtest pipeline'ı.
+Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır,
+model T-1 verisiyle eğitilir (hiperparametre optimizasyonu dahil), T günündeki maçlar test edilir.
 """
 
 import os
@@ -42,8 +43,8 @@ THRESHOLD_O15 = 0.62
 THRESHOLD_O25 = 0.52
 THRESHOLD_O35 = 0.42
 
-# Backtest ayarları: hiperparametre optimizasyonu yapılacak mı? (Yavaşlatır)
-USE_HYPEROPT = False  # Backtest'te False yapın, canlıda True yapabilirsiniz
+# Backtest ayarları: hiperparametre optimizasyonu AKTİF (orijinal davranış)
+USE_HYPEROPT = True
 
 # ==========================================
 # 2. TABLO ŞEMALARI (tüm analiz tabloları)
@@ -370,7 +371,6 @@ class EfficiencyAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[VERİMLİLİK] {count} takım")
 
 class TeamGeneralAnalyzer:
     def __init__(self, db):
@@ -415,7 +415,6 @@ class TeamGeneralAnalyzer:
                     corners = match['corn_a']
                     fouls = match['fouls_a']
                     formation = match['formation_a']
-                # Overall ve Home/Away
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], match['category_id'], venue)
                     node["matches_played"] += 1
@@ -438,7 +437,7 @@ class TeamGeneralAnalyzer:
                         node["corners"] += corners
                     if fouls:
                         node["fouls"] += fouls
-                    # Referee, formation, odds istatistikleri (opsiyonel, basit tut)
+
         insert_query = """
             INSERT INTO team_analytics 
             (team_name, tournament_id, category_id, venue_type, matches_played, wins, draws, losses, goals_for, goals_against,
@@ -468,7 +467,6 @@ class TeamGeneralAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[GENEL] {count} kayıt")
 
 class HalfTimeAnalyzer:
     def __init__(self, db):
@@ -573,7 +571,6 @@ class HalfTimeAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[İLK YARI] {count} takım")
 
 class SecondHalfAnalyzer:
     def __init__(self, db):
@@ -658,7 +655,6 @@ class SecondHalfAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[İKİNCİ YARI] {count} takım")
 
 class FormAnalyzer:
     def __init__(self, db):
@@ -752,7 +748,6 @@ class FormAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[FORM] {count} takım")
 
 class LeagueAnalyzer:
     def __init__(self, db):
@@ -835,7 +830,6 @@ class LeagueAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[LİG] {count} lig")
 
 class RefereeAnalyzer:
     def __init__(self, db):
@@ -907,7 +901,6 @@ class RefereeAnalyzer:
             }
             self.db.cur.execute(insert_query, row)
             count += 1
-        # print(f"[HAKEM] {count} hakem")
 
 def run_all_analyzers(db, max_date=None):
     """Tüm istatistik tablolarını T-1 verisiyle yeniden oluşturur."""
@@ -928,7 +921,7 @@ def run_all_analyzers(db, max_date=None):
         analyzer.analyze(matches)
 
 # ==========================================
-# 4. MODEL EĞİTİMİ (T-1 verisiyle)
+# 4. MODEL EĞİTİMİ (T-1 verisiyle, eksik veriler silinir)
 # ==========================================
 def get_ml_features_query():
     return """
@@ -985,7 +978,8 @@ def load_training_data_up_to_date(db, max_date=None):
         query += f" AND r.start_utc < '{max_date}'"
     query += " ORDER BY r.start_utc"
     db.cur.execute(query)
-    return pd.DataFrame(db.cur.fetchall())
+    df = pd.DataFrame(db.cur.fetchall())
+    return df
 
 def prepare_features(df):
     df['total_goals'] = df['ft_home'] + df['ft_away']
@@ -1005,14 +999,20 @@ def prepare_features(df):
         'ref_avg_goals'
     ]
     X = df[feature_cols].copy()
-    # Eksik değerleri 0 ile doldur (XGBoost handle eder)
-    X = X.fillna(0)
+    # Eksik değer içeren satırları sil (orijinal davranış)
+    before = len(X)
+    X = X.dropna()
+    after = len(X)
+    if before - after > 0:
+        print(f"    Uyarı: {before - after} satır eksik veri nedeniyle silindi.")
+    # Hedefleri de aynı indekslerle filtrele
     y_o15 = df.loc[X.index, 'o15']
     y_o25 = df.loc[X.index, 'o25']
     y_o35 = df.loc[X.index, 'o35']
-    return X, y_o15, y_o25, y_o35
+    dates = df.loc[X.index, 'start_utc']
+    return X, y_o15, y_o25, y_o35, dates
 
-def train_xgb_model(X, y, model_name="model"):
+def train_xgb_model(X, y, model_name):
     if USE_HYPEROPT:
         param_dist = {
             'n_estimators': randint(100, 500),
@@ -1043,7 +1043,7 @@ def train_models(db, max_date=None):
     if df.empty or len(df) < 50:
         print(f"    Yetersiz eğitim verisi ({len(df)} maç), model eğitilemedi.")
         return False
-    X, y_o15, y_o25, y_o35 = prepare_features(df)
+    X, y_o15, y_o25, y_o35, _ = prepare_features(df)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
@@ -1100,31 +1100,36 @@ def predict_matches(db, target_date=None, is_backtest=False):
     correct = 0
     total = 0
     for idx, row in df.iterrows():
-        # NaN'ları 0 ile doldur
-        X_df = pd.DataFrame([row[feature_cols]]).fillna(0)
-        X = np.array(X_df).reshape(1, -1)
-        X_scaled = scaler.transform(X)
-        
-        prob_o15 = model_o15.predict_proba(X_scaled)[0][1]
-        prob_o25 = model_o25.predict_proba(X_scaled)[0][1]
-        prob_o35 = model_o35.predict_proba(X_scaled)[0][1]
-        
-        market, prob = decide_market(prob_o15, prob_o25, prob_o35)
-        is_correct = None
-        actual_result = None
-        
-        if is_backtest and market != 'NO_BET':
-            total_goals = row['ft_home'] + row['ft_away']
-            if market == 'O1.5':
-                is_correct = (total_goals > 1.5)
-            elif market == 'O2.5':
-                is_correct = (total_goals > 2.5)
-            else:
-                is_correct = (total_goals > 3.5)
-            actual_result = f"{total_goals}"
-            if is_correct:
-                correct += 1
-            total += 1
+        # Eksik veri kontrolü: herhangi bir özellik NaN ise NO_BET
+        missing = any(pd.isna(row[col]) for col in feature_cols)
+        if missing:
+            market = 'NO_BET'
+            prob = 0.0
+            prob_o15 = prob_o25 = prob_o35 = None
+            is_correct = None
+            actual_result = None
+        else:
+            X = np.array([row[col] for col in feature_cols]).reshape(1, -1)
+            X_scaled = scaler.transform(X)
+            prob_o15 = model_o15.predict_proba(X_scaled)[0][1]
+            prob_o25 = model_o25.predict_proba(X_scaled)[0][1]
+            prob_o35 = model_o35.predict_proba(X_scaled)[0][1]
+            market, prob = decide_market(prob_o15, prob_o25, prob_o35)
+            is_correct = None
+            actual_result = None
+            
+            if is_backtest and market != 'NO_BET':
+                total_goals = row['ft_home'] + row['ft_away']
+                if market == 'O1.5':
+                    is_correct = (total_goals > 1.5)
+                elif market == 'O2.5':
+                    is_correct = (total_goals > 2.5)
+                else:
+                    is_correct = (total_goals > 3.5)
+                actual_result = f"{total_goals}"
+                if is_correct:
+                    correct += 1
+                total += 1
             
         db.cur.execute("""
             INSERT INTO `match_predictions` 
@@ -1134,7 +1139,7 @@ def predict_matches(db, target_date=None, is_backtest=False):
             predicted_market=VALUES(predicted_market), probability=VALUES(probability),
             prob_o15=VALUES(prob_o15), prob_o25=VALUES(prob_o25), prob_o35=VALUES(prob_o35),
             actual_result=VALUES(actual_result), is_correct=VALUES(is_correct)
-        """, (row['event_id'], market, float(prob), float(prob_o15), float(prob_o25), float(prob_o35), actual_result, is_correct))
+        """, (row['event_id'], market, prob, prob_o15, prob_o25, prob_o35, actual_result, is_correct))
         
         results.append((market, prob, is_correct))
     
@@ -1151,7 +1156,7 @@ def decide_market(prob_o15, prob_o25, prob_o35):
         return 'NO_BET', max(prob_o15, prob_o25, prob_o35)
 
 # ==========================================
-# 6. BACKTEST DÖNGÜSÜ (Varsayılan 40 gün)
+# 6. BACKTEST DÖNGÜSÜ
 # ==========================================
 def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
     tz_tr = timezone(timedelta(hours=3))
@@ -1174,6 +1179,7 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
     print(f"\n{'='*60}")
     print(f" BACKTEST BAŞLADI: {start_date} -> {end_date}")
     print(f" KURAL: Her gün için istatistikler ve model 1 gün geriden (T-1) hesaplanır.")
+    print(f" EKSİK VERİLER SİLİNİR, HİPERPARAMETRE OPTİMİZASYONU AKTİF")
     print(f"{'='*60}\n")
     
     while current <= end_date:
@@ -1208,7 +1214,6 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
         print(" Hiç bahis yapılmadı.")
     print(f"{'='*60}")
     
-    # Günlük sonuçları göster
     if daily_results:
         print("\n Günlük detaylar:")
         for d, v, w, a in daily_results:
