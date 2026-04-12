@@ -38,14 +38,10 @@ jobs:
           DB_PORT: ${{ secrets.DB_PORT }}
         run: python model_egit.py
         
-      - name: Eğitilen Modelleri GitHub'a Kaydet (Kalıcı Yap)
+      - name: Eğitilen Modelleri GitHub'a Kaydet
         run: |
-          # Bot için kimlik oluştur
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Yeni oluşan models klasörünü listeye ekle
-          git add models/
-          
-          # Değişiklik varsa kaydet (commit) ve repoya gönder (push)
-          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Yeni modeller eğitildi ve yüklendi" && git push)
+          git add models/*
+          git commit -m "🤖 Yeni modeller eğitildi ve yüklendi" || echo "Değişiklik yok"
+          git push origin HEAD:main
