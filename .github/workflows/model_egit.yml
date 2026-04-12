@@ -42,6 +42,9 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add models/*
+          
+          # .gitignore engeline takılmamak için -f (force) parametresi ile ZORLA eklendi
+          git add -f models/
+          
           git commit -m "🤖 Yeni modeller eğitildi ve yüklendi" || echo "Değişiklik yok"
           git push origin HEAD:main
