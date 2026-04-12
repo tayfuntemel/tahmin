@@ -1,0 +1,38 @@
+name: Model Eğitimi Güncelleme
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  schedule:
+    # Her ayın 1'inde saat 00:00 UTC'de çalışır
+    # Dakika Saat Gün Ay HaftanınGünü
+    - cron: '0 0 1 * *'
+  workflow_dispatch: # Manuel çalıştırma desteği
+
+jobs:
+  model-egitme-sureci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodları Getir
+        uses: actions/checkout@v4
+        
+      - name: Python Ortamını Hazırla
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install mysql-connector-python
+          # Eğer başka kütüphaneler varsa buraya eklemelisiniz.
+          
+      - name: Eğitim Betiğini Çalıştır
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+        run: python model_egit.py
