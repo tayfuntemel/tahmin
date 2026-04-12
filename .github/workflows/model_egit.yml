@@ -8,6 +8,10 @@ on:
     - cron: '0 0 1 * *'
   workflow_dispatch:
 
+# Botun senin repona dosya yükleyebilmesi için gerekli izin:
+permissions:
+  contents: write
+
 jobs:
   model-egitme-sureci:
     runs-on: ubuntu-latest
@@ -33,3 +37,15 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: python model_egit.py
+        
+      - name: Eğitilen Modelleri GitHub'a Kaydet (Kalıcı Yap)
+        run: |
+          # Bot için kimlik oluştur
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Yeni oluşan models klasörünü listeye ekle
+          git add models/
+          
+          # Değişiklik varsa kaydet (commit) ve repoya gönder (push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Yeni modeller eğitildi ve yüklendi" && git push)
