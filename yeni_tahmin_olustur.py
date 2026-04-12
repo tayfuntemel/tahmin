@@ -5,6 +5,7 @@ import mysql.connector
 import pandas as pd
 import numpy as np
 import joblib
+import sys
 from datetime import datetime, timedelta, timezone
 
 CONFIG = {
@@ -23,32 +24,37 @@ def get_connection():
     return mysql.connector.connect(**CONFIG["db"])
 
 def create_table_if_not_exists():
+    print(">>> ADIM 1: Tablo oluşturma kontrolü başlatılıyor...")
     conn = get_connection()
     cursor = conn.cursor()
+    # Tablo şemasını daha basit ve garantili hale getirdim
     query = """
     CREATE TABLE IF NOT EXISTS `match_predictions` (
       `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `event_id` INT NOT NULL UNIQUE,
+      `event_id` INT NOT NULL,
       `prob_ms1` FLOAT,
       `prob_ms0` FLOAT,
       `prob_ms2` FLOAT,
       `prob_o15` FLOAT,
       `prob_o35` FLOAT,
       `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      FOREIGN KEY (`event_id`) REFERENCES `results_football`(`event_id`)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      UNIQUE KEY `unique_event` (`event_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     try:
         cursor.execute(query)
         conn.commit()
-        print("Tablo kontrolü başarılı (match_predictions hazır).")
+        print(">>> BAŞARI: Tablo hazır veya zaten vardı.")
     except Exception as e:
-        print(f"Tablo oluşturulurken hata: {e}")
+        print(f">>> !!! KRİTİK HATA: Tablo oluşturulamadı! Sebebi: {e}")
+        # Tablo oluşmazsa devam etmenin anlamı yok, burada durduralım ki logda görelim
+        sys.exit(1)
     finally:
         cursor.close()
         conn.close()
 
 def load_models():
+    print(">>> ADIM 2: Modeller yükleniyor...")
     scaler = joblib.load(f"{MODEL_DIR}/scaler.pkl")
     model_result = joblib.load(f"{MODEL_DIR}/result_model.pkl")
     model_o15 = joblib.load(f"{MODEL_DIR}/o15_model.pkl")
@@ -56,14 +62,16 @@ def load_models():
     return scaler, model_result, model_o15, model_u35
 
 def get_upcoming_matches():
+    print(">>> ADIM 3: Gelecek maçlar veritabanından çekiliyor...")
     conn = get_connection()
     tz_tr = timezone(timedelta(hours=3))
     today = datetime.now(tz_tr).date()
     end_date = today + timedelta(days=2)
     
+    # JOIN hatası almamak için tablo ismini tırnak içinde yazdım
     query = """
     SELECT r.* FROM results_football r
-    LEFT JOIN match_predictions mp ON r.event_id = mp.event_id
+    LEFT JOIN `match_predictions` mp ON r.event_id = mp.event_id
     WHERE r.start_utc BETWEEN %s AND %s
       AND r.status IN ('notstarted', 'scheduled')
       AND mp.event_id IS NULL
@@ -122,15 +130,12 @@ def get_features_for_match(row):
 def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn = get_connection()
     cursor = conn.cursor()
-    prob_1x = prob_result[0][1] + prob_result[0][0]
-    prob_12 = prob_result[0][1] + prob_result[0][2]
-    prob_x2 = prob_result[0][0] + prob_result[0][2]
     
     prob_o15_val = prob_o15[0][1]
     prob_u35_val = 1 - prob_u35[0][1] if prob_u35[0][1] is not None else 0.5
     
     cursor.execute("""
-        INSERT INTO match_predictions
+        INSERT INTO `match_predictions`
         (event_id, prob_ms1, prob_ms0, prob_ms2, prob_o15, prob_o35, updated_at)
         VALUES (%s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
@@ -143,11 +148,15 @@ def save_predictions(event_id, prob_result, prob_o15, prob_u35):
     conn.close()
 
 def main():
+    # 1. Önce tabloyu hazırla
     create_table_if_not_exists()
     
+    # 2. Modelleri yükle
     scaler, model_result, model_o15, model_u35 = load_models()
+    
+    # 3. Maçları çek
     matches = get_upcoming_matches()
-    print(f"{len(matches)} yeni maç tahmin edilecek.")
+    print(f">>> BİLGİ: {len(matches)} yeni maç tahmin edilecek.")
     
     for idx, row in matches.iterrows():
         try:
@@ -157,9 +166,9 @@ def main():
             prob_o15 = model_o15.predict_proba(X_scaled)
             prob_u35 = model_u35.predict_proba(X_scaled)
             save_predictions(row['event_id'], prob_result, prob_o15, prob_u35)
-            print(f"Tahmin edildi: {row['home_team']} - {row['away_team']}")
+            print(f"--- Tahmin Edildi: {row['home_team']} - {row['away_team']}")
         except Exception as e:
-            print(f"Hata {row['event_id']}: {e}")
+            print(f"--- HATA {row['event_id']}: {e}")
 
 if __name__ == "__main__":
     main()
