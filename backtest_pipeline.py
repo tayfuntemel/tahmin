@@ -3,7 +3,7 @@
 backtest_pipeline.py - Tam ve hatasız backtest pipeline'ı.
 Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır.
 MySQL NULL/0 hatası (Numpy Float Type Error) giderilmiştir.
-Zaman aşımı (Timeout) sorunlarına karşı Batch Insert (Toplu Ekleme) eklenmiştir.
+Zaman aşımı (Timeout) sorunlarına karşı Batch Insert (Toplu Ekleme) tüm fonksiyonlara uygulanmıştır.
 """
 
 import os
@@ -303,7 +303,7 @@ class Database:
                 self.cur.executemany(query, chunk)
 
 # ==========================================
-# 3. TAM ANALİZ SINIFLARI (BATCH INSERT GÜNCELLEMESİYLE)
+# 3. TAM ANALİZ SINIFLARI 
 # ==========================================
 class EfficiencyAnalyzer:
     def __init__(self, db):
@@ -1074,7 +1074,7 @@ def train_models(db, max_date=None):
     return True
 
 # ==========================================
-# 5. TAHMİN (FLOAT / INT DÖNÜŞÜMLERİ EKLENDİ)
+# 5. TAHMİN (BATCH INSERT VE GÜVENLİ NAN KONTROLÜ EKLENDİ)
 # ==========================================
 def predict_matches(db, target_date=None, is_backtest=False):
     try:
@@ -1121,11 +1121,13 @@ def predict_matches(db, target_date=None, is_backtest=False):
     results = []
     correct = 0
     total = 0
+    rows_to_insert = []
+    
     for idx, row in df.iterrows():
         X = np.array([row[col] for col in feature_cols]).reshape(1, -1)
         X_scaled = scaler.transform(X)
         
-        # NUMPY SAYILARINI SAF PYTHON FLOAT FORMATINA ÇEVİRİYORUZ (MySQL NULL hatasını engelleyen kodlar)
+        # NUMPY SAYILARINI SAF PYTHON FLOAT FORMATINA ÇEVİRİYORUZ
         prob_o15 = float(model_o15.predict_proba(X_scaled)[0][1])
         prob_o25 = float(model_o25.predict_proba(X_scaled)[0][1])
         prob_o35 = float(model_o35.predict_proba(X_scaled)[0][1])
@@ -1139,32 +1141,52 @@ def predict_matches(db, target_date=None, is_backtest=False):
         is_correct = None
         actual_result = None
         
+        # Olası NaN ve boş değerlere karşı güvenlik kontrolü eklendi!
+        ft_home = row.get('ft_home')
+        ft_away = row.get('ft_away')
+        
         if is_backtest and market != 'NO_BET':
-            total_goals = int(row['ft_home'] + row['ft_away'])
-            if market == 'O1.5':
-                is_correct = bool(total_goals > 1.5)
-            elif market == 'O2.5':
-                is_correct = bool(total_goals > 2.5)
-            else:
-                is_correct = bool(total_goals > 3.5)
-            actual_result = f"{total_goals}"
-            if is_correct:
-                correct += 1
-            total += 1
+            # Pandas NaN değerlerinde matematiksel işlem yapılırsa script çökerdi, pd.notna() eklendi
+            if pd.notna(ft_home) and pd.notna(ft_away):
+                total_goals = int(ft_home + ft_away)
+                if market == 'O1.5':
+                    is_correct = bool(total_goals > 1.5)
+                elif market == 'O2.5':
+                    is_correct = bool(total_goals > 2.5)
+                else:
+                    is_correct = bool(total_goals > 3.5)
+                actual_result = f"{total_goals}"
+                if is_correct:
+                    correct += 1
+                total += 1
             
-        db.check_connection() 
-        db.cur.execute("""
-            INSERT INTO `match_predictions` 
-            (event_id, predicted_market, probability, prob_o15, prob_o25, prob_o35, actual_result, is_correct, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON DUPLICATE KEY UPDATE
-            predicted_market=VALUES(predicted_market), probability=VALUES(probability),
-            prob_o15=VALUES(prob_o15), prob_o25=VALUES(prob_o25), prob_o35=VALUES(prob_o35),
-            actual_result=VALUES(actual_result), is_correct=VALUES(is_correct)
-        """, (event_id_clean, market, prob_clean, prob_o15, prob_o25, prob_o35, actual_result, is_correct))
+        # Toplu ekleme için sözlüğe atıyoruz
+        rows_to_insert.append({
+            "event_id": event_id_clean,
+            "predicted_market": market,
+            "probability": prob_clean,
+            "prob_o15": prob_o15,
+            "prob_o25": prob_o25,
+            "prob_o35": prob_o35,
+            "actual_result": actual_result,
+            "is_correct": is_correct
+        })
         
         results.append((market, prob_clean, is_correct))
     
+    # BATCH INSERT UYGULAMASI: Timeout hatalarını tamamen ortadan kaldırır.
+    if rows_to_insert:
+        insert_query = """
+            INSERT INTO `match_predictions` 
+            (event_id, predicted_market, probability, prob_o15, prob_o25, prob_o35, actual_result, is_correct, updated_at)
+            VALUES (%(event_id)s, %(predicted_market)s, %(probability)s, %(prob_o15)s, %(prob_o25)s, %(prob_o35)s, %(actual_result)s, %(is_correct)s, NOW())
+            ON DUPLICATE KEY UPDATE
+            predicted_market=VALUES(predicted_market), probability=VALUES(probability),
+            prob_o15=VALUES(prob_o15), prob_o25=VALUES(prob_o25), prob_o35=VALUES(prob_o35),
+            actual_result=VALUES(actual_result), is_correct=VALUES(is_correct), updated_at=NOW()
+        """
+        db.batch_insert(insert_query, rows_to_insert)
+        
     return results, total, correct
 
 def decide_market(prob_o15, prob_o25, prob_o35):
@@ -1213,7 +1235,7 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
         current += timedelta(days=step_days)
 
 # ==========================================
-# 7. ANA FONKSİYON (TARİH BURADA SABİTLENDİ)
+# 7. ANA FONKSİYON 
 # ==========================================
 def main():
     parser = argparse.ArgumentParser(description="Football Prediction Pipeline with Backtest")
