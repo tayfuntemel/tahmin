@@ -13,7 +13,7 @@ import mysql.connector
 import pandas as pd
 import numpy as np
 import joblib
-import time # <--- YENİ EKLENDİ: Hata durumunda beklemek için eklendi
+import time # Hata durumunda beklemek için eklendi
 from datetime import datetime, timedelta, timezone
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
@@ -234,7 +234,7 @@ class Database:
         self.cur = None
 
     def connect(self):
-        try: # <--- YENİ EKLENDİ: Hata yönetimi
+        try:
             if self.conn:
                 self.close()
             self.conn = mysql.connector.connect(**self.cfg)
@@ -245,7 +245,7 @@ class Database:
             time.sleep(5) 
             self.connect()
 
-    def check_connection(self): # <--- YENİ EKLENDİ: Canlılık kontrolü
+    def check_connection(self):
         try:
             if self.conn and self.conn.is_connected():
                 self.conn.ping(reconnect=True, attempts=3, delay=2)
@@ -261,13 +261,13 @@ class Database:
         if self.conn: self.conn.close()
 
     def create_all_tables(self):
-        self.check_connection() # <--- YENİ EKLENDİ
+        self.check_connection()
         for table, schema in SCHEMAS.items():
             self.cur.execute(schema)
 
     def truncate_analytics_tables(self):
         """Backtest sırasında veri sızıntısını önlemek için tabloları sıfırlar."""
-        self.check_connection() # <--- YENİ EKLENDİ
+        self.check_connection()
         tables = [
             "team_efficiency_analytics", "team_analytics", "team_half_time_analytics",
             "team_second_half_analytics", "team_form_analytics", "league_analytics", "referee_analytics"
@@ -277,7 +277,7 @@ class Database:
 
     def get_matches_finished(self, max_date=None):
         """Belirtilen tarihten ÖNCEKİ (strictly less) bitmiş maçları getirir."""
-        self.check_connection() # <--- YENİ EKLENDİ
+        self.check_connection()
         query = """
             SELECT * FROM results_football
             WHERE status IN ('finished','ended')
@@ -370,7 +370,7 @@ class EfficiencyAnalyzer:
              save_rate_pct=VALUES(save_rate_pct), pressure_index=VALUES(pressure_index)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -475,7 +475,7 @@ class TeamGeneralAnalyzer:
              avg_corners=VALUES(avg_corners), avg_fouls=VALUES(avg_fouls)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for key, data in self.stats.items():
             mp = data["matches_played"]
@@ -579,7 +579,7 @@ class HalfTimeAnalyzer:
              ht_lose_ft_win=VALUES(ht_lose_ft_win), ht_lose_ft_draw=VALUES(ht_lose_ft_draw)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -667,7 +667,7 @@ class SecondHalfAnalyzer:
              sh_over_05_pct=VALUES(sh_over_05_pct), sh_over_15_pct=VALUES(sh_over_15_pct), sh_btts_yes_pct=VALUES(sh_btts_yes_pct)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -765,7 +765,7 @@ class FormAnalyzer:
              current_over_25_streak=VALUES(current_over_25_streak)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for key, data in self.stats.items():
             form_str = ",".join(data["form_queue"])
@@ -837,7 +837,7 @@ class LeagueAnalyzer:
              avg_goals_match=VALUES(avg_goals_match), avg_goals_home=VALUES(avg_goals_home), avg_goals_away=VALUES(avg_goals_away)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for t_id, lg in self.leagues.items():
             tm = lg["matches"]
@@ -916,7 +916,7 @@ class RefereeAnalyzer:
              avg_goals_match=VALUES(avg_goals_match)
         """
         
-        self.db.check_connection() # <--- YENİ EKLENDİ
+        self.db.check_connection()
         count = 0
         for ref_name, r in self.referees.items():
             tm = r["matches"]
@@ -939,7 +939,7 @@ class RefereeAnalyzer:
             count += 1
 
 def run_all_analyzers(db, max_date=None):
-    """Tüm istatistik tablolarını T-1 verisiyle yeniden oluşturur."""
+    """Tüm istatistik tablolarını belirtilen tarihe kadarki (T-1) veriyle yeniden oluşturur."""
     db.truncate_analytics_tables()
     matches = db.get_matches_finished(max_date)
     if not matches:
@@ -1009,7 +1009,7 @@ def get_ml_features_query():
     """
 
 def load_training_data_up_to_date(db, max_date=None):
-    db.check_connection() # <--- YENİ EKLENDİ
+    db.check_connection()
     query = get_ml_features_query() + " WHERE r.status IN ('finished','ended') AND r.ft_home IS NOT NULL AND r.ft_away IS NOT NULL"
     if max_date:
         query += f" AND r.start_utc < '{max_date}'"
@@ -1036,13 +1036,11 @@ def prepare_features(df):
         'ref_avg_goals'
     ]
     X = df[feature_cols].copy()
-    # Eksik değer içeren satırları sil (orijinal davranış)
     before = len(X)
     X = X.dropna()
     after = len(X)
     if before - after > 0:
         print(f"    Uyarı: {before - after} satır eksik veri nedeniyle silindi.")
-    # Hedefleri de aynı indekslerle filtrele
     y_o15 = df.loc[X.index, 'o15']
     y_o25 = df.loc[X.index, 'o25']
     y_o35 = df.loc[X.index, 'o35']
@@ -1107,16 +1105,20 @@ def predict_matches(db, target_date=None, is_backtest=False):
         print(f"    Model yüklenemedi: {e}")
         return [], 0, 0
 
-    db.check_connection() # <--- YENİ EKLENDİ (Hatayı Çözen Asıl Yer Burası)
+    db.check_connection()
 
     query = get_ml_features_query()
+    
+    # EĞER TARİH DIŞARIDAN VERİLDİYSE (Manuel veya Backtest) SADECE O GÜNÜN MAÇLARINI ÇEKER
     if is_backtest and target_date:
-        query += f" WHERE r.start_utc = '{target_date}' AND r.status IN ('finished','ended')"
+        query += f" WHERE DATE(r.start_utc) = '{target_date}' AND r.status IN ('finished','ended')"
+    elif target_date:
+        query += f" WHERE DATE(r.start_utc) = '{target_date}'"
     else:
         tz_tr = timezone(timedelta(hours=3))
         today = datetime.now(tz_tr).date()
         end_date = today + timedelta(days=2)
-        query += f" WHERE r.start_utc BETWEEN '{today}' AND '{end_date}' AND r.status IN ('notstarted', 'scheduled')"
+        query += f" WHERE DATE(r.start_utc) BETWEEN '{today}' AND '{end_date}' AND r.status IN ('notstarted', 'scheduled')"
     
     db.cur.execute(query)
     df = pd.DataFrame(db.cur.fetchall())
@@ -1139,7 +1141,6 @@ def predict_matches(db, target_date=None, is_backtest=False):
     correct = 0
     total = 0
     for idx, row in df.iterrows():
-        # Eksik veri kontrolü: herhangi bir özellik NaN ise NO_BET
         missing = any(pd.isna(row[col]) for col in feature_cols)
         if missing:
             market = 'NO_BET'
@@ -1170,7 +1171,7 @@ def predict_matches(db, target_date=None, is_backtest=False):
                     correct += 1
                 total += 1
             
-        db.check_connection() # <--- YENİ EKLENDİ: Uzun süren döngülerde garantilemek için
+        db.check_connection() 
         db.cur.execute("""
             INSERT INTO `match_predictions` 
             (event_id, predicted_market, probability, prob_o15, prob_o25, prob_o35, actual_result, is_correct, updated_at)
@@ -1224,15 +1225,12 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
     
     while current <= end_date:
         print(f"--- GÜN: {current} ---")
-        # 1. İstatistikleri T-1'e kadar hesapla
         run_all_analyzers(db, max_date=current)
-        # 2. Modeli T-1'e kadar eğit
         success = train_models(db, max_date=current)
         if not success:
             print(f"    Eğitim başarısız, atlanıyor.")
             current += timedelta(days=step_days)
             continue
-        # 3. T gününü tahmin et ve değerlendir
         _, valid, won = predict_matches(db, target_date=current, is_backtest=True)
         if valid > 0:
             acc = (won/valid)*100
@@ -1264,27 +1262,33 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
 # ==========================================
 def main():
     parser = argparse.ArgumentParser(description="Football Prediction Pipeline with Backtest")
-    parser.add_argument("--mode", choices=["stats", "train", "predict", "full", "backtest"], default="backtest",
-                        help="Çalışma modu")
+    parser.add_argument("--mode", choices=["stats", "train", "predict", "full", "backtest"], default="backtest", help="Çalışma modu")
     parser.add_argument("--start", help="Backtest başlangıç tarihi (YYYY-MM-DD)")
     parser.add_argument("--end", help="Backtest bitiş tarihi (YYYY-MM-DD)")
     parser.add_argument("--step", type=int, default=1, help="Backtest adım gün sayısı")
+    # YENİ EKLENEN TARİH PARAMETRESİ
+    parser.add_argument("--date", help="Belirli bir tarih için çalıştır (YYYY-MM-DD)")
     args = parser.parse_args()
     
+    # Kullanıcı --date parametresi verdiyse onu objeye çeviriyoruz
+    target_date_obj = None
+    if args.date:
+        target_date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
+
     db = Database(CONFIG["db"])
     db.connect()
     db.create_all_tables()
     
     if args.mode == "stats":
-        run_all_analyzers(db)
+        run_all_analyzers(db, max_date=target_date_obj)
     elif args.mode == "train":
-        train_models(db)
+        train_models(db, max_date=target_date_obj)
     elif args.mode == "predict":
-        predict_matches(db)
+        predict_matches(db, target_date=target_date_obj)
     elif args.mode == "full":
-        run_all_analyzers(db)
-        train_models(db)
-        predict_matches(db)
+        run_all_analyzers(db, max_date=target_date_obj)
+        train_models(db, max_date=target_date_obj)
+        predict_matches(db, target_date=target_date_obj)
     elif args.mode == "backtest":
         run_backtest(db, args.start, args.end, args.step)
     
