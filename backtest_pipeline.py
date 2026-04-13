@@ -13,6 +13,7 @@ import mysql.connector
 import pandas as pd
 import numpy as np
 import joblib
+import time # <--- YENİ EKLENDİ: Hata durumunda beklemek için eklendi
 from datetime import datetime, timedelta, timezone
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
@@ -233,20 +234,40 @@ class Database:
         self.cur = None
 
     def connect(self):
-        self.conn = mysql.connector.connect(**self.cfg)
-        self.conn.autocommit = True
-        self.cur = self.conn.cursor(dictionary=True)
+        try: # <--- YENİ EKLENDİ: Hata yönetimi
+            if self.conn:
+                self.close()
+            self.conn = mysql.connector.connect(**self.cfg)
+            self.conn.autocommit = True
+            self.cur = self.conn.cursor(dictionary=True)
+        except mysql.connector.Error as err:
+            print(f"    [HATA] Veritabanı bağlantı hatası: {err}")
+            time.sleep(5) 
+            self.connect()
+
+    def check_connection(self): # <--- YENİ EKLENDİ: Canlılık kontrolü
+        try:
+            if self.conn and self.conn.is_connected():
+                self.conn.ping(reconnect=True, attempts=3, delay=2)
+                self.cur = self.conn.cursor(dictionary=True)
+            else:
+                self.connect()
+        except Exception as e:
+            print(f"    [UYARI] Bağlantı yenilenirken hata: {e}. Yeniden bağlanılıyor...")
+            self.connect()
 
     def close(self):
         if self.cur: self.cur.close()
         if self.conn: self.conn.close()
 
     def create_all_tables(self):
+        self.check_connection() # <--- YENİ EKLENDİ
         for table, schema in SCHEMAS.items():
             self.cur.execute(schema)
 
     def truncate_analytics_tables(self):
         """Backtest sırasında veri sızıntısını önlemek için tabloları sıfırlar."""
+        self.check_connection() # <--- YENİ EKLENDİ
         tables = [
             "team_efficiency_analytics", "team_analytics", "team_half_time_analytics",
             "team_second_half_analytics", "team_form_analytics", "league_analytics", "referee_analytics"
@@ -256,6 +277,7 @@ class Database:
 
     def get_matches_finished(self, max_date=None):
         """Belirtilen tarihten ÖNCEKİ (strictly less) bitmiş maçları getirir."""
+        self.check_connection() # <--- YENİ EKLENDİ
         query = """
             SELECT * FROM results_football
             WHERE status IN ('finished','ended')
@@ -347,6 +369,8 @@ class EfficiencyAnalyzer:
              shot_accuracy_pct=VALUES(shot_accuracy_pct), conversion_rate_pct=VALUES(conversion_rate_pct), 
              save_rate_pct=VALUES(save_rate_pct), pressure_index=VALUES(pressure_index)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -450,6 +474,8 @@ class TeamGeneralAnalyzer:
              avg_possession=VALUES(avg_possession), avg_shots=VALUES(avg_shots), avg_shots_on=VALUES(avg_shots_on),
              avg_corners=VALUES(avg_corners), avg_fouls=VALUES(avg_fouls)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for key, data in self.stats.items():
             mp = data["matches_played"]
@@ -552,6 +578,8 @@ class HalfTimeAnalyzer:
              ht_win_ft_win=VALUES(ht_win_ft_win), ht_win_ft_not_win=VALUES(ht_win_ft_not_win), 
              ht_lose_ft_win=VALUES(ht_lose_ft_win), ht_lose_ft_draw=VALUES(ht_lose_ft_draw)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -638,6 +666,8 @@ class SecondHalfAnalyzer:
              sh_avg_goals_for=VALUES(sh_avg_goals_for), sh_avg_goals_against=VALUES(sh_avg_goals_against),
              sh_over_05_pct=VALUES(sh_over_05_pct), sh_over_15_pct=VALUES(sh_over_15_pct), sh_btts_yes_pct=VALUES(sh_btts_yes_pct)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
@@ -734,6 +764,8 @@ class FormAnalyzer:
              current_clean_sheet_streak=VALUES(current_clean_sheet_streak), current_scoring_streak=VALUES(current_scoring_streak),
              current_over_25_streak=VALUES(current_over_25_streak)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for key, data in self.stats.items():
             form_str = ",".join(data["form_queue"])
@@ -804,6 +836,8 @@ class LeagueAnalyzer:
              over_25_pct=VALUES(over_25_pct), under_25_pct=VALUES(under_25_pct), btts_yes_pct=VALUES(btts_yes_pct),
              avg_goals_match=VALUES(avg_goals_match), avg_goals_home=VALUES(avg_goals_home), avg_goals_away=VALUES(avg_goals_away)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for t_id, lg in self.leagues.items():
             tm = lg["matches"]
@@ -881,6 +915,8 @@ class RefereeAnalyzer:
              over_25_pct=VALUES(over_25_pct), btts_yes_pct=VALUES(btts_yes_pct),
              avg_goals_match=VALUES(avg_goals_match)
         """
+        
+        self.db.check_connection() # <--- YENİ EKLENDİ
         count = 0
         for ref_name, r in self.referees.items():
             tm = r["matches"]
@@ -973,6 +1009,7 @@ def get_ml_features_query():
     """
 
 def load_training_data_up_to_date(db, max_date=None):
+    db.check_connection() # <--- YENİ EKLENDİ
     query = get_ml_features_query() + " WHERE r.status IN ('finished','ended') AND r.ft_home IS NOT NULL AND r.ft_away IS NOT NULL"
     if max_date:
         query += f" AND r.start_utc < '{max_date}'"
@@ -1025,7 +1062,7 @@ def train_xgb_model(X, y, model_name):
             'reg_lambda': uniform(0, 2)
         }
         tscv = TimeSeriesSplit(n_splits=3)
-        base_model = xgb.XGBClassifier(objective='binary:logistic', random_state=42, use_label_encoder=False, eval_metric='logloss')
+        base_model = xgb.XGBClassifier(objective='binary:logistic', random_state=42, eval_metric='logloss')
         random_search = RandomizedSearchCV(base_model, param_distributions=param_dist, n_iter=20, cv=tscv, scoring='roc_auc', n_jobs=-1, random_state=42)
         random_search.fit(X, y)
         best_model = random_search.best_estimator_
@@ -1069,6 +1106,8 @@ def predict_matches(db, target_date=None, is_backtest=False):
     except Exception as e:
         print(f"    Model yüklenemedi: {e}")
         return [], 0, 0
+
+    db.check_connection() # <--- YENİ EKLENDİ (Hatayı Çözen Asıl Yer Burası)
 
     query = get_ml_features_query()
     if is_backtest and target_date:
@@ -1131,6 +1170,7 @@ def predict_matches(db, target_date=None, is_backtest=False):
                     correct += 1
                 total += 1
             
+        db.check_connection() # <--- YENİ EKLENDİ: Uzun süren döngülerde garantilemek için
         db.cur.execute("""
             INSERT INTO `match_predictions` 
             (event_id, predicted_market, probability, prob_o15, prob_o25, prob_o35, actual_result, is_correct, updated_at)
