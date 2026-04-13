@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-backtest_pipeline_original.py - Tam ve hatasız backtest pipeline'ı.
-Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır,
-model T-1 verisiyle eğitilir (hiperparametre optimizasyonu dahil), T günündeki maçlar test edilir.
+backtest_pipeline.py - Tam ve hatasız backtest pipeline'ı.
+Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır.
+MySQL NULL/0 hatası (Numpy Float Type Error) giderilmiştir.
 """
 
 import os
@@ -13,7 +13,7 @@ import mysql.connector
 import pandas as pd
 import numpy as np
 import joblib
-import time # Hata durumunda beklemek için eklendi
+import time
 from datetime import datetime, timedelta, timezone
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
@@ -44,11 +44,10 @@ THRESHOLD_O15 = 0.62
 THRESHOLD_O25 = 0.52
 THRESHOLD_O35 = 0.42
 
-# Backtest ayarları: hiperparametre optimizasyonu AKTİF (orijinal davranış)
 USE_HYPEROPT = True
 
 # ==========================================
-# 2. TABLO ŞEMALARI (tüm analiz tabloları)
+# 2. TABLO ŞEMALARI
 # ==========================================
 SCHEMAS = {
     "team_efficiency_analytics": """
@@ -266,7 +265,6 @@ class Database:
             self.cur.execute(schema)
 
     def truncate_analytics_tables(self):
-        """Backtest sırasında veri sızıntısını önlemek için tabloları sıfırlar."""
         self.check_connection()
         tables = [
             "team_efficiency_analytics", "team_analytics", "team_half_time_analytics",
@@ -276,7 +274,6 @@ class Database:
             self.cur.execute(f"TRUNCATE TABLE {t}")
 
     def get_matches_finished(self, max_date=None):
-        """Belirtilen tarihten ÖNCEKİ (strictly less) bitmiş maçları getirir."""
         self.check_connection()
         query = """
             SELECT * FROM results_football
@@ -915,7 +912,6 @@ class RefereeAnalyzer:
             self.db.cur.execute(insert_query, row)
 
 def run_all_analyzers(db, max_date=None):
-    """Tüm istatistik tablolarını belirtilen tarihe kadarki (T-1) veriyle yeniden oluşturur."""
     db.truncate_analytics_tables()
     matches = db.get_matches_finished(max_date)
     if not matches:
@@ -933,7 +929,7 @@ def run_all_analyzers(db, max_date=None):
         analyzer.analyze(matches)
 
 # ==========================================
-# 4. MODEL EĞİTİMİ (T-1 verisiyle, eksik veriler silinir)
+# 4. MODEL EĞİTİMİ
 # ==========================================
 def get_ml_features_query():
     return """
@@ -1065,7 +1061,7 @@ def train_models(db, max_date=None):
     return True
 
 # ==========================================
-# 5. TAHMİN (T günü veya gelecek)
+# 5. TAHMİN (FLOAT / INT DÖNÜŞÜMLERİ EKLENDİ)
 # ==========================================
 def predict_matches(db, target_date=None, is_backtest=False):
     try:
@@ -1116,22 +1112,28 @@ def predict_matches(db, target_date=None, is_backtest=False):
         X = np.array([row[col] for col in feature_cols]).reshape(1, -1)
         X_scaled = scaler.transform(X)
         
-        prob_o15 = model_o15.predict_proba(X_scaled)[0][1]
-        prob_o25 = model_o25.predict_proba(X_scaled)[0][1]
-        prob_o35 = model_o35.predict_proba(X_scaled)[0][1]
+        # NUMPY SAYILARINI SAF PYTHON FLOAT FORMATINA ÇEVİRİYORUZ (MySQL NULL hatasını engelleyen kodlar)
+        prob_o15 = float(model_o15.predict_proba(X_scaled)[0][1])
+        prob_o25 = float(model_o25.predict_proba(X_scaled)[0][1])
+        prob_o35 = float(model_o35.predict_proba(X_scaled)[0][1])
         
         market, prob = decide_market(prob_o15, prob_o25, prob_o35)
+        
+        # DEĞERLERİ VERİTABANI İÇİN TEMİZLİYORUZ
+        prob_clean = float(prob)
+        event_id_clean = int(row['event_id'])
+        
         is_correct = None
         actual_result = None
         
         if is_backtest and market != 'NO_BET':
-            total_goals = row['ft_home'] + row['ft_away']
+            total_goals = int(row['ft_home'] + row['ft_away'])
             if market == 'O1.5':
-                is_correct = (total_goals > 1.5)
+                is_correct = bool(total_goals > 1.5)
             elif market == 'O2.5':
-                is_correct = (total_goals > 2.5)
+                is_correct = bool(total_goals > 2.5)
             else:
-                is_correct = (total_goals > 3.5)
+                is_correct = bool(total_goals > 3.5)
             actual_result = f"{total_goals}"
             if is_correct:
                 correct += 1
@@ -1146,9 +1148,9 @@ def predict_matches(db, target_date=None, is_backtest=False):
             predicted_market=VALUES(predicted_market), probability=VALUES(probability),
             prob_o15=VALUES(prob_o15), prob_o25=VALUES(prob_o25), prob_o35=VALUES(prob_o35),
             actual_result=VALUES(actual_result), is_correct=VALUES(is_correct)
-        """, (row['event_id'], market, prob, prob_o15, prob_o25, prob_o35, actual_result, is_correct))
+        """, (event_id_clean, market, prob_clean, prob_o15, prob_o25, prob_o35, actual_result, is_correct))
         
-        results.append((market, prob, is_correct))
+        results.append((market, prob_clean, is_correct))
     
     return results, total, correct
 
@@ -1198,7 +1200,7 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
         current += timedelta(days=step_days)
 
 # ==========================================
-# 7. ANA FONKSİYON (TARİH BURAYA EKLENDİ)
+# 7. ANA FONKSİYON (TARİH BURADA SABİTLENDİ)
 # ==========================================
 def main():
     parser = argparse.ArgumentParser(description="Football Prediction Pipeline with Backtest")
@@ -1227,7 +1229,6 @@ def main():
     elif args.mode == "train":
         train_models(db, max_date=target_date_obj)
     elif args.mode == "predict":
-        # Tahmin fonksiyonu senin yukarıda belirlediğin tarihi kullanacak
         predict_matches(db, target_date=target_date_obj)
     elif args.mode == "full":
         run_all_analyzers(db, max_date=target_date_obj)
