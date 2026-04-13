@@ -1137,39 +1137,36 @@ def predict_matches(db, target_date=None, is_backtest=False):
         'ref_avg_goals'
     ]
     
+    # EKSİK VERİLERİ 0 İLE DOLDUR (TOLERANSLI MOD)
+    df[feature_cols] = df[feature_cols].fillna(0)
+
     results = []
     correct = 0
     total = 0
     for idx, row in df.iterrows():
-        missing = any(pd.isna(row[col]) for col in feature_cols)
-        if missing:
-            market = 'NO_BET'
-            prob = 0.0
-            prob_o15 = prob_o25 = prob_o35 = None
-            is_correct = None
-            actual_result = None
-        else:
-            X = np.array([row[col] for col in feature_cols]).reshape(1, -1)
-            X_scaled = scaler.transform(X)
-            prob_o15 = model_o15.predict_proba(X_scaled)[0][1]
-            prob_o25 = model_o25.predict_proba(X_scaled)[0][1]
-            prob_o35 = model_o35.predict_proba(X_scaled)[0][1]
-            market, prob = decide_market(prob_o15, prob_o25, prob_o35)
-            is_correct = None
-            actual_result = None
-            
-            if is_backtest and market != 'NO_BET':
-                total_goals = row['ft_home'] + row['ft_away']
-                if market == 'O1.5':
-                    is_correct = (total_goals > 1.5)
-                elif market == 'O2.5':
-                    is_correct = (total_goals > 2.5)
-                else:
-                    is_correct = (total_goals > 3.5)
-                actual_result = f"{total_goals}"
-                if is_correct:
-                    correct += 1
-                total += 1
+        X = np.array([row[col] for col in feature_cols]).reshape(1, -1)
+        X_scaled = scaler.transform(X)
+        
+        prob_o15 = model_o15.predict_proba(X_scaled)[0][1]
+        prob_o25 = model_o25.predict_proba(X_scaled)[0][1]
+        prob_o35 = model_o35.predict_proba(X_scaled)[0][1]
+        
+        market, prob = decide_market(prob_o15, prob_o25, prob_o35)
+        is_correct = None
+        actual_result = None
+        
+        if is_backtest and market != 'NO_BET':
+            total_goals = row['ft_home'] + row['ft_away']
+            if market == 'O1.5':
+                is_correct = (total_goals > 1.5)
+            elif market == 'O2.5':
+                is_correct = (total_goals > 2.5)
+            else:
+                is_correct = (total_goals > 3.5)
+            actual_result = f"{total_goals}"
+            if is_correct:
+                correct += 1
+            total += 1
             
         db.check_connection() 
         db.cur.execute("""
@@ -1266,11 +1263,9 @@ def main():
     parser.add_argument("--start", help="Backtest başlangıç tarihi (YYYY-MM-DD)")
     parser.add_argument("--end", help="Backtest bitiş tarihi (YYYY-MM-DD)")
     parser.add_argument("--step", type=int, default=1, help="Backtest adım gün sayısı")
-    # YENİ EKLENEN TARİH PARAMETRESİ
     parser.add_argument("--date", help="Belirli bir tarih için çalıştır (YYYY-MM-DD)")
     args = parser.parse_args()
     
-    # Kullanıcı --date parametresi verdiyse onu objeye çeviriyoruz
     target_date_obj = None
     if args.date:
         target_date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
