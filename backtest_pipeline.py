@@ -3,6 +3,7 @@
 backtest_pipeline.py - Tam ve hatasız backtest pipeline'ı.
 Veri sızıntısı önlenir: Her gün için istatistikler T-1 tarihine kadar hesaplanır.
 MySQL NULL/0 hatası (Numpy Float Type Error) giderilmiştir.
+Zaman aşımı (Timeout) sorunlarına karşı Batch Insert (Toplu Ekleme) eklenmiştir.
 """
 
 import os
@@ -286,8 +287,23 @@ class Database:
         self.cur.execute(query)
         return self.cur.fetchall()
 
+    def batch_insert(self, query, data_list, chunk_size=1000):
+        """Verileri paketler (chunk) halinde topluca ekler. Zaman aşımını ve bağlantı kopmalarını önler."""
+        if not data_list:
+            return
+        self.check_connection()
+        for i in range(0, len(data_list), chunk_size):
+            chunk = data_list[i:i+chunk_size]
+            try:
+                self.cur.executemany(query, chunk)
+            except Exception as e:
+                print(f"    [UYARI] Toplu ekleme sırasında hata/bağlantı kopması: {e}. Yeniden bağlanılıyor...")
+                self.connect()
+                # Bağlantı tazelendikten sonra kaldığı paketten tekrar dener
+                self.cur.executemany(query, chunk)
+
 # ==========================================
-# 3. TAM ANALİZ SINIFLARI 
+# 3. TAM ANALİZ SINIFLARI (BATCH INSERT GÜNCELLEMESİYLE)
 # ==========================================
 class EfficiencyAnalyzer:
     def __init__(self, db):
@@ -314,23 +330,16 @@ class EfficiencyAnalyzer:
                 continue
             for is_home, t_name in [(True, home), (False, away)]:
                 if is_home:
-                    gf = match['ft_home']
-                    ga = match['ft_away']
-                    shots = match['shot_h']
-                    shots_on = match['shot_on_h']
-                    saves = match['saves_h']
-                    opp_shots_on = match['shot_on_a']
-                    poss = match['poss_h']
-                    corners = match['corn_h']
+                    gf, ga = match['ft_home'], match['ft_away']
+                    shots, shots_on = match['shot_h'], match['shot_on_h']
+                    saves, opp_shots_on = match['saves_h'], match['shot_on_a']
+                    poss, corners = match['poss_h'], match['corn_h']
                 else:
-                    gf = match['ft_away']
-                    ga = match['ft_home']
-                    shots = match['shot_a']
-                    shots_on = match['shot_on_a']
-                    saves = match['saves_a']
-                    opp_shots_on = match['shot_on_h']
-                    poss = match['poss_a']
-                    corners = match['corn_a']
+                    gf, ga = match['ft_away'], match['ft_home']
+                    shots, shots_on = match['shot_a'], match['shot_on_a']
+                    saves, opp_shots_on = match['saves_a'], match['shot_on_h']
+                    poss, corners = match['poss_a'], match['corn_a']
+                
                 if shots is None or poss is None:
                     continue
                 for venue in ["Overall", "Home" if is_home else "Away"]:
@@ -365,7 +374,7 @@ class EfficiencyAnalyzer:
              save_rate_pct=VALUES(save_rate_pct), pressure_index=VALUES(pressure_index)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -387,7 +396,9 @@ class EfficiencyAnalyzer:
                 "shot_accuracy_pct": round(shot_acc, 2), "conversion_rate_pct": round(conversion, 2),
                 "save_rate_pct": round(save_rate, 2), "pressure_index": round(pressure_idx, 2)
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class TeamGeneralAnalyzer:
     def __init__(self, db):
@@ -398,8 +409,7 @@ class TeamGeneralAnalyzer:
         return {
             "matches_played": 0, "wins": 0, "draws": 0, "losses": 0,
             "goals_for": 0, "goals_against": 0,
-            "possession": 0, "shots": 0, "shots_on": 0, "corners": 0, "fouls": 0,
-            "referees": {}, "formations": {}, "odds_o25_ranges": {}
+            "possession": 0, "shots": 0, "shots_on": 0, "corners": 0, "fouls": 0
         }
 
     def _get_team_node(self, team_name, tournament_id, category_id, venue_type):
@@ -415,21 +425,16 @@ class TeamGeneralAnalyzer:
                 continue
             for is_home, t_name in [(True, home), (False, away)]:
                 if is_home:
-                    gf = match['ft_home']
-                    ga = match['ft_away']
-                    poss = match['poss_h']
-                    shots = match['shot_h']
-                    shots_on = match['shot_on_h']
-                    corners = match['corn_h']
+                    gf, ga = match['ft_home'], match['ft_away']
+                    poss, shots = match['poss_h'], match['shot_h']
+                    shots_on, corners = match['shot_on_h'], match['corn_h']
                     fouls = match['fouls_h']
                 else:
-                    gf = match['ft_away']
-                    ga = match['ft_home']
-                    poss = match['poss_a']
-                    shots = match['shot_a']
-                    shots_on = match['shot_on_a']
-                    corners = match['corn_a']
+                    gf, ga = match['ft_away'], match['ft_home']
+                    poss, shots = match['poss_a'], match['shot_a']
+                    shots_on, corners = match['shot_on_a'], match['corn_a']
                     fouls = match['fouls_a']
+                    
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], match['category_id'], venue)
                     node["matches_played"] += 1
@@ -461,7 +466,7 @@ class TeamGeneralAnalyzer:
              avg_corners=VALUES(avg_corners), avg_fouls=VALUES(avg_fouls)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for key, data in self.stats.items():
             mp = data["matches_played"]
             if mp == 0:
@@ -476,7 +481,9 @@ class TeamGeneralAnalyzer:
                 "avg_corners": round(data["corners"] / mp, 2) if mp else 0,
                 "avg_fouls": round(data["fouls"] / mp, 2) if mp else 0,
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class HalfTimeAnalyzer:
     def __init__(self, db):
@@ -505,15 +512,12 @@ class HalfTimeAnalyzer:
             home, away = match['home_team'], match['away_team']
             for is_home, t_name in [(True, home), (False, away)]:
                 if is_home:
-                    ht_gf = match['ht_home']
-                    ht_ga = match['ht_away']
-                    ft_gf = match['ft_home']
-                    ft_ga = match['ft_away']
+                    ht_gf, ht_ga = match['ht_home'], match['ht_away']
+                    ft_gf, ft_ga = match['ft_home'], match['ft_away']
                 else:
-                    ht_gf = match['ht_away']
-                    ht_ga = match['ht_home']
-                    ft_gf = match['ft_away']
-                    ft_ga = match['ft_home']
+                    ht_gf, ht_ga = match['ht_away'], match['ht_home']
+                    ft_gf, ft_ga = match['ft_away'], match['ft_home']
+                    
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], venue)
                     node["matches"] += 1
@@ -563,7 +567,7 @@ class HalfTimeAnalyzer:
              ht_lose_ft_win=VALUES(ht_lose_ft_win), ht_lose_ft_draw=VALUES(ht_lose_ft_draw)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -580,7 +584,9 @@ class HalfTimeAnalyzer:
                 "ht_win_ft_win": data["ht_win_ft_win"], "ht_win_ft_not_win": data["ht_win_ft_not_win"],
                 "ht_lose_ft_win": data["ht_lose_ft_win"], "ht_lose_ft_draw": data["ht_lose_ft_draw"]
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class SecondHalfAnalyzer:
     def __init__(self, db):
@@ -649,7 +655,7 @@ class SecondHalfAnalyzer:
              sh_over_05_pct=VALUES(sh_over_05_pct), sh_over_15_pct=VALUES(sh_over_15_pct), sh_btts_yes_pct=VALUES(sh_btts_yes_pct)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -664,7 +670,9 @@ class SecondHalfAnalyzer:
                 "sh_over_15_pct": round((data["sh_over_15"] / mp) * 100, 2),
                 "sh_btts_yes_pct": round((data["sh_btts"] / mp) * 100, 2)
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class FormAnalyzer:
     def __init__(self, db):
@@ -689,11 +697,10 @@ class FormAnalyzer:
             home, away = match['home_team'], match['away_team']
             for is_home, t_name in [(True, home), (False, away)]:
                 if is_home:
-                    gf = match['ft_home']
-                    ga = match['ft_away']
+                    gf, ga = match['ft_home'], match['ft_away']
                 else:
-                    gf = match['ft_away']
-                    ga = match['ft_home']
+                    gf, ga = match['ft_away'], match['ft_home']
+                    
                 result = 'G' if gf > ga else ('B' if gf == ga else 'M')
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], venue)
@@ -744,7 +751,7 @@ class FormAnalyzer:
              current_over_25_streak=VALUES(current_over_25_streak)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for key, data in self.stats.items():
             form_str = ",".join(data["form_queue"])
             pts = sum(3 if c=='G' else 1 if c=='B' else 0 for c in data["form_queue"])
@@ -756,7 +763,9 @@ class FormAnalyzer:
                 "clean_sheet_streak": data["clean_sheet_streak"], "scoring_streak": data["scoring_streak"],
                 "over_25_streak": data["over_25_streak"]
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class LeagueAnalyzer:
     def __init__(self, db):
@@ -814,7 +823,7 @@ class LeagueAnalyzer:
              avg_goals_match=VALUES(avg_goals_match), avg_goals_home=VALUES(avg_goals_home), avg_goals_away=VALUES(avg_goals_away)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for t_id, lg in self.leagues.items():
             tm = lg["matches"]
             if tm == 0:
@@ -838,7 +847,9 @@ class LeagueAnalyzer:
                 "avg_goals_home": round(lg["goals_home"] / tm, 2),
                 "avg_goals_away": round(lg["goals_away"] / tm, 2),
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 class RefereeAnalyzer:
     def __init__(self, db):
@@ -891,7 +902,7 @@ class RefereeAnalyzer:
              avg_goals_match=VALUES(avg_goals_match)
         """
         
-        self.db.check_connection()
+        rows_to_insert = []
         for ref_name, r in self.referees.items():
             tm = r["matches"]
             if tm == 0:
@@ -909,7 +920,9 @@ class RefereeAnalyzer:
                 "btts_yes_pct": round((r["btts_yes_count"] / tm) * 100, 2),
                 "avg_goals_match": round(r["total_goals"] / tm, 2)
             }
-            self.db.cur.execute(insert_query, row)
+            rows_to_insert.append(row)
+            
+        self.db.batch_insert(insert_query, rows_to_insert)
 
 def run_all_analyzers(db, max_date=None):
     db.truncate_analytics_tables()
