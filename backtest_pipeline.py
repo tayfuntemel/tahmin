@@ -290,7 +290,7 @@ class Database:
         return self.cur.fetchall()
 
 # ==========================================
-# 3. TAM ANALİZ SINIFLARI (Efficiency, TeamGeneral, HalfTime, SecondHalf, Form, League, Referee)
+# 3. TAM ANALİZ SINIFLARI 
 # ==========================================
 class EfficiencyAnalyzer:
     def __init__(self, db):
@@ -315,7 +315,6 @@ class EfficiencyAnalyzer:
             home, away = match['home_team'], match['away_team']
             if not home or not away:
                 continue
-            # Ev sahibi
             for is_home, t_name in [(True, home), (False, away)]:
                 if is_home:
                     gf = match['ft_home']
@@ -337,7 +336,6 @@ class EfficiencyAnalyzer:
                     corners = match['corn_a']
                 if shots is None or poss is None:
                     continue
-                # Overall ve Home/Away
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], venue)
                     node["matches"] += 1
@@ -371,7 +369,6 @@ class EfficiencyAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -394,7 +391,6 @@ class EfficiencyAnalyzer:
                 "save_rate_pct": round(save_rate, 2), "pressure_index": round(pressure_idx, 2)
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class TeamGeneralAnalyzer:
     def __init__(self, db):
@@ -429,7 +425,6 @@ class TeamGeneralAnalyzer:
                     shots_on = match['shot_on_h']
                     corners = match['corn_h']
                     fouls = match['fouls_h']
-                    formation = match['formation_h']
                 else:
                     gf = match['ft_away']
                     ga = match['ft_home']
@@ -438,7 +433,6 @@ class TeamGeneralAnalyzer:
                     shots_on = match['shot_on_a']
                     corners = match['corn_a']
                     fouls = match['fouls_a']
-                    formation = match['formation_a']
                 for venue in ["Overall", "Home" if is_home else "Away"]:
                     node = self._get_team_node(t_name, match['tournament_id'], match['category_id'], venue)
                     node["matches_played"] += 1
@@ -451,16 +445,11 @@ class TeamGeneralAnalyzer:
                             node["draws"] += 1
                         else:
                             node["losses"] += 1
-                    if poss:
-                        node["possession"] += poss
-                    if shots:
-                        node["shots"] += shots
-                    if shots_on:
-                        node["shots_on"] += shots_on
-                    if corners:
-                        node["corners"] += corners
-                    if fouls:
-                        node["fouls"] += fouls
+                    if poss: node["possession"] += poss
+                    if shots: node["shots"] += shots
+                    if shots_on: node["shots_on"] += shots_on
+                    if corners: node["corners"] += corners
+                    if fouls: node["fouls"] += fouls
 
         insert_query = """
             INSERT INTO team_analytics 
@@ -476,7 +465,6 @@ class TeamGeneralAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for key, data in self.stats.items():
             mp = data["matches_played"]
             if mp == 0:
@@ -492,7 +480,6 @@ class TeamGeneralAnalyzer:
                 "avg_fouls": round(data["fouls"] / mp, 2) if mp else 0,
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class HalfTimeAnalyzer:
     def __init__(self, db):
@@ -580,7 +567,6 @@ class HalfTimeAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -598,7 +584,6 @@ class HalfTimeAnalyzer:
                 "ht_lose_ft_win": data["ht_lose_ft_win"], "ht_lose_ft_draw": data["ht_lose_ft_draw"]
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class SecondHalfAnalyzer:
     def __init__(self, db):
@@ -668,7 +653,6 @@ class SecondHalfAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for key, data in self.stats.items():
             mp = data["matches"]
             if mp == 0:
@@ -684,7 +668,6 @@ class SecondHalfAnalyzer:
                 "sh_btts_yes_pct": round((data["sh_btts"] / mp) * 100, 2)
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class FormAnalyzer:
     def __init__(self, db):
@@ -720,7 +703,6 @@ class FormAnalyzer:
                     node["form_queue"].append(result)
                     if len(node["form_queue"]) > 5:
                         node["form_queue"].pop(0)
-                    # Streak güncellemeleri
                     if result == 'G':
                         node["win_streak"] += 1
                         node["unbeaten_streak"] += 1
@@ -766,7 +748,6 @@ class FormAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for key, data in self.stats.items():
             form_str = ",".join(data["form_queue"])
             pts = sum(3 if c=='G' else 1 if c=='B' else 0 for c in data["form_queue"])
@@ -779,7 +760,6 @@ class FormAnalyzer:
                 "over_25_streak": data["over_25_streak"]
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class LeagueAnalyzer:
     def __init__(self, db):
@@ -838,7 +818,6 @@ class LeagueAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for t_id, lg in self.leagues.items():
             tm = lg["matches"]
             if tm == 0:
@@ -863,7 +842,6 @@ class LeagueAnalyzer:
                 "avg_goals_away": round(lg["goals_away"] / tm, 2),
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 class RefereeAnalyzer:
     def __init__(self, db):
@@ -917,7 +895,6 @@ class RefereeAnalyzer:
         """
         
         self.db.check_connection()
-        count = 0
         for ref_name, r in self.referees.items():
             tm = r["matches"]
             if tm == 0:
@@ -936,7 +913,6 @@ class RefereeAnalyzer:
                 "avg_goals_match": round(r["total_goals"] / tm, 2)
             }
             self.db.cur.execute(insert_query, row)
-            count += 1
 
 def run_all_analyzers(db, max_date=None):
     """Tüm istatistik tablolarını belirtilen tarihe kadarki (T-1) veriyle yeniden oluşturur."""
@@ -1036,11 +1012,7 @@ def prepare_features(df):
         'ref_avg_goals'
     ]
     X = df[feature_cols].copy()
-    before = len(X)
     X = X.dropna()
-    after = len(X)
-    if before - after > 0:
-        print(f"    Uyarı: {before - after} satır eksik veri nedeniyle silindi.")
     y_o15 = df.loc[X.index, 'o15']
     y_o25 = df.loc[X.index, 'o25']
     y_o35 = df.loc[X.index, 'o35']
@@ -1106,10 +1078,8 @@ def predict_matches(db, target_date=None, is_backtest=False):
         return [], 0, 0
 
     db.check_connection()
-
     query = get_ml_features_query()
     
-    # EĞER TARİH DIŞARIDAN VERİLDİYSE (Manuel veya Backtest) SADECE O GÜNÜN MAÇLARINI ÇEKER
     if is_backtest and target_date:
         query += f" WHERE DATE(r.start_utc) = '{target_date}' AND r.status IN ('finished','ended')"
     elif target_date:
@@ -1137,7 +1107,6 @@ def predict_matches(db, target_date=None, is_backtest=False):
         'ref_avg_goals'
     ]
     
-    # EKSİK VERİLERİ 0 İLE DOLDUR (TOLERANSLI MOD)
     df[feature_cols] = df[feature_cols].fillna(0)
 
     results = []
@@ -1214,61 +1183,40 @@ def run_backtest(db, start_date_str=None, end_date_str=None, step_days=1):
     total_won = 0
     daily_results = []
     
-    print(f"\n{'='*60}")
-    print(f" BACKTEST BAŞLADI: {start_date} -> {end_date}")
-    print(f" KURAL: Her gün için istatistikler ve model 1 gün geriden (T-1) hesaplanır.")
-    print(f" EKSİK VERİLER SİLİNİR, HİPERPARAMETRE OPTİMİZASYONU AKTİF")
-    print(f"{'='*60}\n")
-    
     while current <= end_date:
-        print(f"--- GÜN: {current} ---")
         run_all_analyzers(db, max_date=current)
         success = train_models(db, max_date=current)
         if not success:
-            print(f"    Eğitim başarısız, atlanıyor.")
             current += timedelta(days=step_days)
             continue
         _, valid, won = predict_matches(db, target_date=current, is_backtest=True)
         if valid > 0:
             acc = (won/valid)*100
-            print(f"    Tahmin: {valid} maç | Kazanılan: {won} | Başarı: %{acc:.1f}")
             daily_results.append((current, valid, won, acc))
             total_bets += valid
             total_won += won
-        else:
-            print(f"    Oynanmaya uygun maç bulunamadı.")
         current += timedelta(days=step_days)
-    
-    print(f"\n{'='*60}")
-    print(f" GENEL BACKTEST SONUCU ({start_date} - {end_date})")
-    print(f" Toplam Oynanan Maç Tahmini: {total_bets}")
-    print(f" Başarılı Olanlar: {total_won}")
-    if total_bets > 0:
-        print(f" GENEL DOĞRULUK (WIN RATE): %{(total_won/total_bets)*100:.2f}")
-    else:
-        print(" Hiç bahis yapılmadı.")
-    print(f"{'='*60}")
-    
-    if daily_results:
-        print("\n Günlük detaylar:")
-        for d, v, w, a in daily_results:
-            print(f"   {d}: {v} bahis, {w} doğru (%{a:.1f})")
 
 # ==========================================
-# 7. ANA FONKSİYON
+# 7. ANA FONKSİYON (TARİH BURAYA EKLENDİ)
 # ==========================================
 def main():
     parser = argparse.ArgumentParser(description="Football Prediction Pipeline with Backtest")
-    parser.add_argument("--mode", choices=["stats", "train", "predict", "full", "backtest"], default="backtest", help="Çalışma modu")
+    parser.add_argument("--mode", choices=["stats", "train", "predict", "full", "backtest"], default="predict", help="Çalışma modu")
     parser.add_argument("--start", help="Backtest başlangıç tarihi (YYYY-MM-DD)")
     parser.add_argument("--end", help="Backtest bitiş tarihi (YYYY-MM-DD)")
     parser.add_argument("--step", type=int, default=1, help="Backtest adım gün sayısı")
     parser.add_argument("--date", help="Belirli bir tarih için çalıştır (YYYY-MM-DD)")
     args = parser.parse_args()
     
-    target_date_obj = None
-    if args.date:
-        target_date_obj = datetime.strptime(args.date, "%Y-%m-%d").date()
+    # ---------------------------------------------------------
+    # KANKA TARİHİ BURAYA YAZIYORSUN: (GG.AA.YYYY formatında)
+    manuel_tarih = "03.04.2026" 
+    
+    # Tarihi Python'un anlayacağı formata çeviriyoruz
+    target_date_obj = datetime.strptime(manuel_tarih, "%d.%m.%Y").date()
+    print(f"ÇALIŞTIRILAN TARİH: {target_date_obj} (Sisteme Sabitlendi)")
+    # ---------------------------------------------------------
 
     db = Database(CONFIG["db"])
     db.connect()
@@ -1279,6 +1227,7 @@ def main():
     elif args.mode == "train":
         train_models(db, max_date=target_date_obj)
     elif args.mode == "predict":
+        # Tahmin fonksiyonu senin yukarıda belirlediğin tarihi kullanacak
         predict_matches(db, target_date=target_date_obj)
     elif args.mode == "full":
         run_all_analyzers(db, max_date=target_date_obj)
