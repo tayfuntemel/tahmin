@@ -1248,7 +1248,7 @@ def main():
     
     # ---------------------------------------------------------
     # KANKA TARİHİ BURAYA YAZIYORSUN: (GG.AA.YYYY formatında)
-    manuel_tarih = "04.04.2026" 
+    manuel_tarih = "05.04.2026" 
     
     # Tarihi Python'un anlayacağı formata çeviriyoruz
     target_date_obj = datetime.strptime(manuel_tarih, "%d.%m.%Y").date()
