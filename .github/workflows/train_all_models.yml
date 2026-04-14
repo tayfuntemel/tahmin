@@ -1,0 +1,61 @@
+name: Haftalik Tum Modelleri Egit
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  schedule:
+    # Her Pazartesi gece saat 03:00'te (UTC) otomatik çalışır
+    - cron: '0 3 * * 1' 
+  workflow_dispatch:    # GitHub arayüzünden manuel tetikleme butonu
+
+permissions:
+  contents: write       # Botun oluşan modelleri repoya yazabilmesi için gerekli izin
+
+jobs:
+  model-egitim-sureci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodları Getir
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Çakışmaları önlemek için tüm geçmişi çeker
+
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Gerekli Kütüphaneleri Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy mysql-connector-python scikit-learn xgboost joblib
+          
+      - name: Modelleri Eğit
+        env:
+          # Python kodunun içindeki os.getenv() komutları bu sırları okuyacak
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+        run: |
+          # Dosya adını senin belirttiğin gibi train_all_models.py olarak yazdım
+          python train_all_models.py
+        
+      - name: Oluşan Modelleri GitHub'a Gönder
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Sadece models klasöründeki değişiklikleri ekle
+          git add models/
+          
+          # Değişiklik yoksa çökmemesi için koruma
+          git commit -m "🤖 [OTOMATİK] Tüm tahmin modelleri güncellendi ve kaydedildi" || echo "Degisiklik yok, commit atlanıyor."
+          
+          # Çakışmaları önlemek için önce uzak sunucudaki güncel hali çek
+          git pull --rebase origin main
+          
+          # Dosyaları repoya güvenle gönder
+          git push origin HEAD:main
