@@ -451,8 +451,12 @@ def train_and_save_models(X, df, version_suffix):
 # ---------- 7. ANA FONKSİYON ----------
 def main():
     parser = argparse.ArgumentParser(description="Football prediction model training with date filter")
-    parser.add_argument("--max-year", type=int, help="Maksimum yıl (örn: 2026)")
-    parser.add_argument("--max-week", type=int, help="Maksimum hafta (örn: 10)")
+    
+    # === DİKKAT: YIL VE HAFTAYI DEĞİŞTİRMEK İSTEDİĞİNDE BURADAKİ DEĞERLERİ GÜNCELLE ===
+    parser.add_argument("--max-year", type=int, default=2026, help="Maksimum yıl (örn: 2026)")
+    parser.add_argument("--max-week", type=int, default=10, help="Maksimum hafta (örn: 10)")
+    # =====================================================================================
+    
     args = parser.parse_args()
 
     if args.max_year is not None and args.max_week is not None:
