@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS results_football (
   event_id        BIGINT UNSIGNED NOT NULL,
   start_utc       DATE NULL,
   start_time_utc  TIME NULL,
+  match_year      INT NULL,
+  match_week      INT NULL,
   status          VARCHAR(32) NULL,
   home_team       VARCHAR(128) NULL,
   away_team       VARCHAR(128) NULL,
@@ -86,19 +88,31 @@ class DB:
         self.conn = mysql.connector.connect(**self.cfg)
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
+        
+        # Tabloyu oluştur (eğer yoksa)
         self.cur.execute(SCHEMA_CREATE_TABLE)
+        
+        # Sütunlar yoksa tabloya ekle (Mevcut tabloyu günceller)
+        try:
+            self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
+            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi.")
+        except mysql.connector.Error as err:
+            # Hata kodu 1060 ise (Duplicate column name), sütun zaten var demektir, görmezden geliriz.
+            if err.errno != 1060:
+                print(f"[DB] Tablo güncellenirken uyarı: {err}")
+
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
         q = """
         INSERT INTO results_football
-        (event_id, start_utc, start_time_utc, status, home_team, away_team,
+        (event_id, start_utc, start_time_utc, match_year, match_week, status, home_team, away_team,
          odds_1, odds_x, odds_2, odds_1x, odds_12, odds_x2, odds_btts_yes, odds_btts_no, 
          odds_o05, odds_u05, odds_o15, odds_u15, odds_o25, odds_u25, odds_o35, odds_u35, 
          odds_o45, odds_u45, odds_o55, odds_u55, odds_o65, odds_u65, odds_o75, odds_u75,
          tournament_id, tournament_name, category_id, category_name, country)
         VALUES
-        (%(event_id)s, %(start_utc)s, %(start_time_utc)s, %(status)s, %(home_team)s, %(away_team)s,
+        (%(event_id)s, %(start_utc)s, %(start_time_utc)s, %(match_year)s, %(match_week)s, %(status)s, %(home_team)s, %(away_team)s,
          %(odds_1)s, %(odds_x)s, %(odds_2)s, %(odds_1x)s, %(odds_12)s, %(odds_x2)s, %(odds_btts_yes)s, %(odds_btts_no)s,
          %(odds_o05)s, %(odds_u05)s, %(odds_o15)s, %(odds_u15)s, %(odds_o25)s, %(odds_u25)s, %(odds_o35)s, %(odds_u35)s, 
          %(odds_o45)s, %(odds_u45)s, %(odds_o55)s, %(odds_u55)s, %(odds_o65)s, %(odds_u65)s, %(odds_o75)s, %(odds_u75)s,
@@ -106,7 +120,9 @@ class DB:
         ON DUPLICATE KEY UPDATE
           status = VALUES(status),
           start_utc = VALUES(start_utc), 
-          start_time_utc = VALUES(start_time_utc);
+          start_time_utc = VALUES(start_time_utc),
+          match_year = VALUES(match_year),
+          match_week = VALUES(match_week);
         """
         self.cur.execute(q, row)
 
@@ -243,6 +259,11 @@ class Scraper:
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         dt_tr = dt.datetime.fromtimestamp(ts, tz_tr) if isinstance(ts, int) else None
         
+        # Yıl ve hafta hesaplaması
+        match_year, match_week = None, None
+        if dt_tr:
+            match_year, match_week, _ = dt_tr.isocalendar()
+            
         status = (ev.get("status", {}).get("type") or "").lower()
         t = ev.get("tournament") or {}; u = ev.get("uniqueTournament") or {}
         cat = (t.get("category") or {}) if "category" in t else (u.get("category") or {})
@@ -251,6 +272,8 @@ class Scraper:
             "event_id": ev.get("id"),
             "start_utc": dt_tr.strftime("%Y-%m-%d") if dt_tr else None,
             "start_time_utc": dt_tr.strftime("%H:%M:%S") if dt_tr else None,
+            "match_year": match_year,
+            "match_week": match_week,
             "status": status,
             "home_team": (ev.get("homeTeam") or {}).get("name"),
             "away_team": (ev.get("awayTeam") or {}).get("name"),
