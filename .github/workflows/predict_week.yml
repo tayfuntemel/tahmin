@@ -1,0 +1,61 @@
+name: Haftalik Tahminleri Calistir
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  # Sadece manuel tetikleme: Github arayüzünden yıl ve hafta girebilmen için
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Tahmin yapılacak yıl (Örn: 2026)'
+        required: true
+        default: '2026'
+      week:
+        description: 'Tahmin yapılacak hafta (Örn: 11)'
+        required: true
+        default: '11'
+      model_version:
+        description: 'Kullanılacak model versiyonu (Örn: 2026_week10). Otomatik bulması için boş bırak.'
+        required: false
+        default: ''
+
+jobs:
+  tahmin-sureci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodları Getir
+        uses: actions/checkout@v4
+
+      - name: Python Ortamını Hazırla
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          # predict_week.py için gereken kütüphaneler
+          pip install mysql-connector-python pandas numpy scikit-learn joblib
+          
+      - name: Maç Tahminlerini Yap
+        env:
+          # Gönderdiğin dosyadaki gibi veritabanı şifrelerini Github Secrets'tan alıyoruz
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+        run: |
+          echo "🤖 Seçilen Yıl: ${{ github.event.inputs.year }}, Seçilen Hafta: ${{ github.event.inputs.week }}"
+          
+          # Model versiyonu girildiyse onu kullan, girilmediyse kod otomatik bulsun
+          if [ -z "${{ github.event.inputs.model_version }}" ]; then
+            python predict_week.py --year ${{ github.event.inputs.year }} --week ${{ github.event.inputs.week }}
+          else
+            python predict_week.py --year ${{ github.event.inputs.year }} --week ${{ github.event.inputs.week }} --model-version ${{ github.event.inputs.model_version }}
+          fi
+          
+      # NOT: predict_week.py şu an sadece sonuçları ekrana (konsola) yazdırıyor.
+      # Yeni bir model dosyası üretmediği için senin gönderdiğin koddaki "Git Push/Commit" adımlarına
+      # bu YAML dosyasında gerek yok. Sonuçları Github Actions loglarından (siyah ekrandan) okuyabilirsin.
