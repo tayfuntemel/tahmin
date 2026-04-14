@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS results_football (
   event_id        BIGINT UNSIGNED NOT NULL,
   start_utc       DATE NULL,
   start_time_utc  TIME NULL,
+  match_year      INT NULL,
+  match_week      INT NULL,
   status          VARCHAR(32) NULL,
   home_team       VARCHAR(128) NULL,
   away_team       VARCHAR(128) NULL,
@@ -84,20 +86,32 @@ class DB:
         self.conn = mysql.connector.connect(**self.cfg)
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
+        
+        # Tabloyu oluştur (eğer yoksa)
         self.cur.execute(SCHEMA_CREATE_TABLE)
+        
+        # Sütunlar yoksa tabloya ekle (Mevcut tabloyu günceller)
+        try:
+            self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
+            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi.")
+        except mysql.connector.Error as err:
+            # Hata kodu 1060 ise (Duplicate column name), sütun zaten var demektir, görmezden geliriz.
+            if err.errno != 1060:
+                print(f"[DB] Tablo güncellenirken uyarı: {err}")
+
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
         q = """
         INSERT INTO results_football
-        (event_id, start_utc, start_time_utc, status, home_team, away_team,
+        (event_id, start_utc, start_time_utc, match_year, match_week, status, home_team, away_team,
          ht_home, ht_away, ft_home, ft_away,
          poss_h, poss_a, corn_h, corn_a, shot_h, shot_a, shot_on_h, shot_on_a,
          fouls_h, fouls_a, offsides_h, offsides_a, saves_h, saves_a, passes_h, passes_a, tackles_h, tackles_a,
          referee, formation_h, formation_a, 
          tournament_id, tournament_name, category_id, category_name, country)
         VALUES
-        (%(event_id)s, %(start_utc)s, %(start_time_utc)s, %(status)s, %(home_team)s, %(away_team)s,
+        (%(event_id)s, %(start_utc)s, %(start_time_utc)s, %(match_year)s, %(match_week)s, %(status)s, %(home_team)s, %(away_team)s,
          %(ht_home)s, %(ht_away)s, %(ft_home)s, %(ft_away)s,
          %(poss_h)s, %(poss_a)s, %(corn_h)s, %(corn_a)s, %(shot_h)s, %(shot_a)s, %(shot_on_h)s, %(shot_on_a)s,
          %(fouls_h)s, %(fouls_a)s, %(offsides_h)s, %(offsides_a)s, %(saves_h)s, %(saves_a)s, %(passes_h)s, %(passes_a)s, %(tackles_h)s, %(tackles_a)s,
@@ -106,6 +120,7 @@ class DB:
         ON DUPLICATE KEY UPDATE
           status = VALUES(status),
           start_utc = VALUES(start_utc), start_time_utc = VALUES(start_time_utc),
+          match_year = VALUES(match_year), match_week = VALUES(match_week),
           ht_home = VALUES(ht_home), ht_away = VALUES(ht_away),
           ft_home = VALUES(ft_home), ft_away = VALUES(ft_away),
           poss_h = VALUES(poss_h), poss_a = VALUES(poss_a),
@@ -217,6 +232,11 @@ class Scraper:
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         dt_tr = dt.datetime.fromtimestamp(ts, tz_tr) if isinstance(ts, int) else None
         
+        # Yıl ve hafta hesaplaması
+        match_year, match_week = None, None
+        if dt_tr:
+            match_year, match_week, _ = dt_tr.isocalendar()
+            
         status = (ev.get("status", {}).get("type") or "").lower()
         hs, as_ = ev.get("homeScore", {}) or {}, ev.get("awayScore", {}) or {}
         
@@ -227,6 +247,8 @@ class Scraper:
             "event_id": ev.get("id"),
             "start_utc": dt_tr.strftime("%Y-%m-%d") if dt_tr else None,
             "start_time_utc": dt_tr.strftime("%H:%M:%S") if dt_tr else None,
+            "match_year": match_year,
+            "match_week": match_week,
             "status": status,
             "home_team": (ev.get("homeTeam") or {}).get("name"),
             "away_team": (ev.get("awayTeam") or {}).get("name"),
