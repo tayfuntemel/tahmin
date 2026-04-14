@@ -1,16 +1,21 @@
-name: Haftalik Tum Modelleri Egit
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+name: Haftalik Tum Modelleri Egit (Parametreli)
 
 on:
-  schedule:
-    # Her Pazartesi gece saat 03:00'te (UTC) otomatik çalışır
-    - cron: '0 3 * * 1' 
-  workflow_dispatch:    # GitHub arayüzünden manuel tetikleme butonu
+  workflow_dispatch:
+    inputs:
+      max_year:
+        description: 'Maksimum yıl (örn: 2026)'
+        required: true
+        default: '2026'
+        type: string
+      max_week:
+        description: 'Maksimum hafta (örn: 10)'
+        required: true
+        default: '10'
+        type: string
 
 permissions:
-  contents: write       # Botun oluşan modelleri repoya yazabilmesi için gerekli izin
+  contents: write
 
 jobs:
   model-egitim-sureci:
@@ -19,7 +24,7 @@ jobs:
       - name: Kodları Getir
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Çakışmaları önlemek için tüm geçmişi çeker
+          fetch-depth: 0
 
       - name: Python Ortamını Kur
         uses: actions/setup-python@v5
@@ -29,33 +34,25 @@ jobs:
       - name: Gerekli Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy mysql-connector-python scikit-learn xgboost joblib
-          
-      - name: Modelleri Eğit
+          pip install pandas numpy mysql-connector-python scikit-learn joblib
+
+      - name: Modelleri Eğit (Belirtilen yıl ve haftaya kadar)
         env:
-          # Python kodunun içindeki os.getenv() komutları bu sırları okuyacak
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
-          # Dosya adını senin belirttiğin gibi train_all_models.py olarak yazdım
-          python train_all_models.py
-        
+          python train_all_models.py \
+            --max-year ${{ github.event.inputs.max_year }} \
+            --max-week ${{ github.event.inputs.max_week }}
+
       - name: Oluşan Modelleri GitHub'a Gönder
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Sadece models klasöründeki değişiklikleri ekle
           git add models/
-          
-          # Değişiklik yoksa çökmemesi için koruma
-          git commit -m "🤖 [OTOMATİK] Tüm tahmin modelleri güncellendi ve kaydedildi" || echo "Degisiklik yok, commit atlanıyor."
-          
-          # Çakışmaları önlemek için önce uzak sunucudaki güncel hali çek
+          git commit -m "🤖 Model güncellemesi - yıl ${{ github.event.inputs.max_year }} hafta ${{ github.event.inputs.max_week }}" || echo "Değişiklik yok"
           git pull --rebase origin main
-          
-          # Dosyaları repoya güvenle gönder
           git push origin HEAD:main
