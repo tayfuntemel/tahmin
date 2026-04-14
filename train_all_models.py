@@ -8,8 +8,8 @@ train_all_models.py
 - Modelleri scaler ile birlikte 'models/' klasörüne, içinde max_year ve max_week geçecek şekilde kaydeder
 
 Kullanım:
-    python train_all_models.py --max-year 2026 --max-week 11
-    (2026'nın 11. haftasına kadar olan maçlarla eğitir)
+    python train_all_models.py --max-year 2026 --max-week 10
+    (2026'nın 10. haftasına kadar olan maçlarla eğitir)
 """
 
 import os
