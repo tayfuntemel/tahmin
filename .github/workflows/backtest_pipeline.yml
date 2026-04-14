@@ -5,8 +5,8 @@ env:
 
 on:
   schedule:
-    # Her gece çalışacak şekilde ayarlandı
-    - cron: '0 0 * * *' 
+    # Her Pazartesi saat 00:01'de çalışacak şekilde ayarlandı (UTC saatine göre)
+    - cron: '1 0 * * 1' 
   workflow_dispatch:    # GitHub arayüzünden manuel "Run workflow" butonu
 
 permissions:
@@ -25,14 +25,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          # requirements.txt hatası vermemesi için cache bilerek eklenmedi!
 
       - name: Bağımlılıkları Yükle
         run: |
           python -m pip install --upgrade pip
           pip install mysql-connector-python pandas numpy scikit-learn joblib xgboost scipy
           
-      - name: Full Pipeline Çalıştır (İstatistik + Eğitim + Tahmin)
+      - name: Haftalık Modelleri Güncelle
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -40,22 +39,19 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
-          # --mode full komutu sırasıyla: 
-          # 1. İstatistikleri hesaplar 
-          # 2. T-1 verisiyle modeli eğitir 
-          # 3. Gelecek maçları tahmin edip veritabanına yazar
-          python backtest_pipeline.py --mode full
+          # Gelecek hafta için modelleri eğiten scriptimiz
+          python haftalik_model_guncelle.py
         
       - name: Modelleri Zorla Kaydet ve Pushla
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # models klasörünü zorla github'a ekle
-          git add -f models/
+          # HATA ÇÖZÜMÜ: Sadece models/ değil, değişen TÜM dosyaları (models_weekly dahil) ekler
+          git add .
           
           # Değişiklik yoksa (örneğin veri azlığından model eğitilemediyse) çökmemesi için koruma
-          git commit -m "🤖 [OTOMATİK] İstatistikler, modeller ve tahminler güncellendi" || echo "Degisiklik yok"
+          git commit -m "🤖 [OTOMATİK] Haftalık XGBoost modelleri eğitildi ve güncellendi" || echo "Degisiklik yok"
           
           # İŞTE ÇÖKMEYİ ENGELLEYEN KISIM: Araya giren yeni Python kodlarını vb. çek ve kendi commitini üste koy
           git pull --rebase origin main
