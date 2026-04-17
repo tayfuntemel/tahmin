@@ -1,7 +1,2 @@
-mysql-connector-python
-pandas
-numpy
-scikit-learn
-joblib
-xgboost
-scipy
+mysql-connector-python>=8.0.0
+numpy>=1.21.0
