@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Tahmin scripti - cache tablolarını (league_stats, team_form_cache, referee_stats) kullanır.
-VALUE KONTROLÜ GEVŞETİLDİ / KALDIRILDI: edge >= VALUE_EDGE_THRESHOLD (varsayılan 0)
+Master prompt'taki tüm kurallar uygulanır.
+Düzeltilmiş version: early_bonus ve second_bonus artık doğru hesaplanır.
 """
 
 import os
@@ -29,13 +30,7 @@ MAJOR_TOURNAMENT_IDS = {
     64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
 }
 
-# ============================================================
-# VALUE EŞİĞİ – burayı değiştirerek kontrolü gevşet/sıkılaştır
-# 0 = her zaman oyna (value kontrolü yok)
-# 2 = hafif gevşek
-# 5 = standart
-# ============================================================
-VALUE_EDGE_THRESHOLD = 0   # <--- İstediğin değeri gir
+VALUE_EDGE_THRESHOLD = 0   # 0 = value kontrolü yok
 
 class PredictionEngine:
     def __init__(self):
@@ -94,8 +89,17 @@ class PredictionEngine:
         self.cursor.execute("SELECT * FROM league_stats WHERE category_id = %s", (category_id,))
         row = self.cursor.fetchone()
         if row:
-            return row
-        # Varsayılan değerler
+            return {
+                'avg_goals': float(row['avg_goals']) if row['avg_goals'] is not None else 2.5,
+                'avg_shot_on': float(row['avg_shot_on']) if row['avg_shot_on'] is not None else 8.0,
+                'avg_total_shots': float(row['avg_total_shots']) if row['avg_total_shots'] is not None else 22.0,
+                'avg_corners': float(row['avg_corners']) if row['avg_corners'] is not None else 9.0,
+                'btts_ratio': float(row['btts_ratio']) if row['btts_ratio'] is not None else 0.45,
+                'over25_ratio': float(row['over25_ratio']) if row['over25_ratio'] is not None else 0.45,
+                'avg_first_half_goals': float(row['avg_first_half_goals']) if row['avg_first_half_goals'] is not None else 1.1,
+                'zero_zero_comeback_ratio': float(row['zero_zero_comeback_ratio']) if row['zero_zero_comeback_ratio'] is not None else 0.15
+            }
+        # Varsayılan
         return {
             'avg_goals': 2.5,
             'avg_shot_on': 8.0,
@@ -111,7 +115,22 @@ class PredictionEngine:
         self.cursor.execute("SELECT * FROM team_form_cache WHERE team_key = %s", (team_key,))
         row = self.cursor.fetchone()
         if row:
-            return row
+            return {
+                'last_10_avg_goals': float(row['last_10_avg_goals']) if row['last_10_avg_goals'] is not None else 1.0,
+                'last_10_avg_shot_on': float(row['last_10_avg_shot_on']) if row['last_10_avg_shot_on'] is not None else 4.0,
+                'last_10_avg_corners': float(row['last_10_avg_corners']) if row['last_10_avg_corners'] is not None else 4.0,
+                'last_10_btts_ratio': float(row['last_10_btts_ratio']) if row['last_10_btts_ratio'] is not None else 0.4,
+                'last_10_avg_first_half_goals': float(row['last_10_avg_first_half_goals']) if row['last_10_avg_first_half_goals'] is not None else 0.5,
+                'zero_zero_comeback_ratio': float(row['zero_zero_comeback_ratio']) if row['zero_zero_comeback_ratio'] is not None else 0.15,
+                'home_last_5_avg_goals': float(row['home_last_5_avg_goals']) if row['home_last_5_avg_goals'] is not None else 1.0,
+                'away_last_5_avg_goals': float(row['away_last_5_avg_goals']) if row['away_last_5_avg_goals'] is not None else 1.0,
+                'last_3_avg_shot_on': float(row['last_3_avg_shot_on']) if row['last_3_avg_shot_on'] is not None else 4.0,
+                'last_3_avg_total_shots': float(row['last_3_avg_total_shots']) if row['last_3_avg_total_shots'] is not None else 10.0,
+                'last_3_avg_corners': float(row['last_3_avg_corners']) if row['last_3_avg_corners'] is not None else 4.0,
+                'last_3_avg_possession': float(row['last_3_avg_possession']) if row['last_3_avg_possession'] is not None else 45.0,
+                'last_match_shot_on': int(row['last_match_shot_on']) if row['last_match_shot_on'] is not None else 4
+            }
+        # Varsayılan
         return {
             'last_10_avg_goals': 1.0,
             'last_10_avg_shot_on': 4.0,
@@ -266,7 +285,6 @@ class PredictionEngine:
             'net_total': net_total,
         }
 
-        # VALUE KONTROLÜ – GEVŞETİLMİŞ EŞİK
         if over_odds and over_odds > 0:
             result['over_edge'] = model_prob - (100 / over_odds)
             result['over_play'] = result['over_edge'] >= VALUE_EDGE_THRESHOLD
