@@ -11,14 +11,23 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: Kodu Checkout Et
+        uses: actions/checkout@v4
+
+      - name: Python Ortamını Kur
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Update stats tables
+
+      - name: Gerekli Kütüphaneleri Yükle
+        # Pip'i güncelliyoruz ve gereksinimleri kuruyoruz. 
+        # Kurulum bitince kurulu paketleri listeliyoruz (Hata ayıklamak için)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip list 
+
+      - name: İstatistik Tablolarını Güncelle
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -26,7 +35,8 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: python update_stats.py
-      - name: Run predictions
+
+      - name: Tahminleri Çalıştır
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
