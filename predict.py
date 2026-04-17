@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Tahmin scripti - cache tablolarını kullanır.
-predictions tablosunu oluşturur ve her maç için tahminleri kaydeder.
+Tahmin scripti - cache tablolarını (league_stats, team_form_cache, referee_stats) kullanır.
+Önce update_stats.py çalıştırılmış olmalıdır.
+UTF-8 karakter desteği eklendi.
 """
+
 import os
 import datetime as dt
 import mysql.connector
+import numpy as np
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "database": os.getenv("DB_NAME"),
-    "port": int(os.getenv("DB_PORT", 3306))
+    "port": int(os.getenv("DB_PORT", 3306)),
+    "charset": "utf8mb4",
+    "use_unicode": True,
+    "collation": "utf8mb4_unicode_ci"
 }
 
 MAJOR_TOURNAMENT_IDS = {
@@ -24,7 +31,7 @@ MAJOR_TOURNAMENT_IDS = {
     64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
 }
 
-class Predictor:
+class PredictionEngine:
     def __init__(self):
         self.conn = None
         self.cursor = None
@@ -67,14 +74,22 @@ class Predictor:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_prediction (event_id, prediction_date)
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
+        print("[DB] predictions tablosu hazır.")
+
+    def close(self):
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
 
     def get_league_stats(self, category_id):
         self.cursor.execute("SELECT * FROM league_stats WHERE category_id = %s", (category_id,))
         row = self.cursor.fetchone()
         if row:
             return row
+        # Varsayılan
         return {'avg_goals': 2.5, 'avg_shot_on': 8.0, 'avg_corners': 9.0,
                 'btts_ratio': 0.45, 'over25_ratio': 0.45}
 
@@ -83,6 +98,7 @@ class Predictor:
         row = self.cursor.fetchone()
         if row:
             return row
+        # Varsayılan form
         return {'last_10_avg_goals': 1.0, 'last_10_avg_shot_on': 4.0, 'last_10_avg_corners': 4.0,
                 'last_10_btts_ratio': 0.4, 'home_last_5_avg_goals': 1.0, 'away_last_5_avg_goals': 1.0,
                 'last_3_avg_shot_on': 4.0, 'last_3_avg_corners': 4.0, 'last_3_avg_possession': 45.0}
@@ -96,14 +112,15 @@ class Predictor:
             return 0.9
         return 1.0
 
-    def get_h2h_stats(self, home_team, away_team, category_id):
-        self.cursor.execute("""
+    def get_h2h_stats(self, home_team, away_team, category_id, last_n=10):
+        query = """
             SELECT ft_home, ft_away FROM results_football
             WHERE status IN ('finished', 'ended')
                 AND category_id = %s
                 AND ((home_team = %s AND away_team = %s) OR (home_team = %s AND away_team = %s))
-            ORDER BY start_utc DESC LIMIT 10
-        """, (category_id, home_team, away_team, away_team, home_team))
+            ORDER BY start_utc DESC LIMIT %s
+        """
+        self.cursor.execute(query, (category_id, home_team, away_team, away_team, home_team, last_n))
         matches = self.cursor.fetchall()
         if not matches:
             return None, None
@@ -129,10 +146,12 @@ class Predictor:
             return (
                 cache['last_3_avg_shot_on'] * 3 * norm_shot +
                 cache['last_3_avg_corners'] * 1.5 * norm_corn +
-                cache['last_3_avg_shot_on'] * 1 * norm_shot +
+                cache['last_3_avg_shot_on'] * 1 * norm_shot +   # total shot approximated
                 cache['last_3_avg_possession'] * 0.2 * norm_poss
             ) / 3.0
-        return min(40.0, (pressure(home_cache) + pressure(away_cache)) / 2.0)
+        home_p = pressure(home_cache)
+        away_p = pressure(away_cache)
+        return min(40.0, (home_p + away_p) / 2.0)
 
     def calculate_h2h_score(self, h2h_btts, h2h_over25, league_btts, league_over25):
         if h2h_btts is None:
@@ -166,29 +185,48 @@ class Predictor:
         cat_id = match['category_id'] or 0
         home_key = f"{home}|{cat_id}"
         away_key = f"{away}|{cat_id}"
+        
         league = self.get_league_stats(cat_id)
         home_cache = self.get_team_form_cache(home_key)
         away_cache = self.get_team_form_cache(away_key)
+        
         form_score = self.calculate_form_score(home_cache, away_cache, league['avg_goals'])
         pressure_score = self.calculate_attack_pressure(home_cache, away_cache, league['avg_shot_on'], league['avg_corners'])
+        
         h2h_btts, h2h_over25 = self.get_h2h_stats(home, away, cat_id)
         h2h_score = self.calculate_h2h_score(h2h_btts, h2h_over25, league['btts_ratio'], league['over25_ratio'])
+        
         early_bonus = self.calculate_early_bonus(home_cache, away_cache, league['avg_goals'])
         second_bonus = self.calculate_second_half_bonus(home_cache, away_cache, league['btts_ratio'])
+        
         referee_penalty = self.get_referee_penalty(match.get('referee'), league['avg_goals'])
+        
         raw_total = form_score + pressure_score + h2h_score + early_bonus + second_bonus
         net_total = raw_total * referee_penalty
-        model_prob = min(99.0, (net_total / 110.0) * 100)
+        max_possible = 110.0
+        model_prob = min(99.0, (net_total / max_possible) * 100)
         kg_prob = model_prob * 0.95
+        
         over_odds = match.get('odds_o25')
         btts_odds = match.get('odds_btts_yes')
+        
         result = {
-            'home_team': home, 'away_team': away, 'date': match['start_utc'],
-            'category_id': cat_id, 'model_over_prob': model_prob, 'model_btts_prob': kg_prob,
-            'over_odds': over_odds, 'btts_odds': btts_odds,
-            'form_score': form_score, 'pressure_score': pressure_score, 'h2h_score': h2h_score,
-            'early_bonus': early_bonus, 'second_bonus': second_bonus,
-            'referee_penalty': referee_penalty, 'net_total': net_total
+            'home_team': home,
+            'away_team': away,
+            'date': match['start_utc'],
+            'category_id': cat_id,
+            'model_over_prob': model_prob,
+            'model_btts_prob': kg_prob,
+            'over_odds': over_odds,
+            'btts_odds': btts_odds,
+            'form_score': form_score,
+            'pressure_score': pressure_score,
+            'h2h_score': h2h_score,
+            'early_bonus': early_bonus,
+            'second_bonus': second_bonus,
+            'referee_penalty': referee_penalty,
+            'net_total': net_total,
+            'league_stats': league
         }
         if over_odds and over_odds > 0:
             result['over_edge'] = model_prob - (100 / over_odds)
@@ -205,7 +243,7 @@ class Predictor:
         return result
 
     def save_prediction(self, pred, event_id):
-        self.cursor.execute("""
+        sql = """
             INSERT INTO predictions 
             (event_id, prediction_date, match_date, home_team, away_team, category_id,
              model_over_prob, model_btts_prob, odds_over, odds_btts, edge_over, edge_btts,
@@ -213,60 +251,71 @@ class Predictor:
              second_bonus, referee_penalty, net_total_score)
             VALUES (%s, CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-            model_over_prob = VALUES(model_over_prob), model_btts_prob = VALUES(model_btts_prob),
-            odds_over = VALUES(odds_over), odds_btts = VALUES(odds_btts),
-            edge_over = VALUES(edge_over), edge_btts = VALUES(edge_btts),
-            play_over = VALUES(play_over), play_btts = VALUES(play_btts),
-            form_score = VALUES(form_score), pressure_score = VALUES(pressure_score),
-            h2h_score = VALUES(h2h_score), early_bonus = VALUES(early_bonus),
-            second_bonus = VALUES(second_bonus), referee_penalty = VALUES(referee_penalty),
-            net_total_score = VALUES(net_total_score), updated_at = NOW()
-        """, (event_id, pred['date'], pred['home_team'], pred['away_team'], pred['category_id'],
-              pred['model_over_prob'], pred['model_btts_prob'], pred['over_odds'], pred['btts_odds'],
-              pred['over_edge'], pred['btts_edge'], pred['over_play'], pred['btts_play'],
-              pred['form_score'], pred['pressure_score'], pred['h2h_score'], pred['early_bonus'],
-              pred['second_bonus'], pred['referee_penalty'], pred['net_total']))
-
-    def print_report(self, pred):
-        print("=" * 50)
-        print(f"🏆 {pred['home_team']} vs {pred['away_team']} (Lig ID: {pred['category_id']}) - {pred['date']}")
-        print("=" * 50)
-        print(f"📊 Model Olasılık: 2.5 Üst: %{pred['model_over_prob']:.1f} | KG Var: %{pred['model_btts_prob']:.1f}")
-        if pred['over_odds']:
-            print(f"💰 Over 2.5: Oran {pred['over_odds']:.2f} (%{100/pred['over_odds']:.1f}) -> Edge %{pred['over_edge']:.1f} -> {'OYNA' if pred['over_play'] else 'OYNAMA'}")
-        if pred['btts_odds']:
-            print(f"💰 KG Var: Oran {pred['btts_odds']:.2f} (%{100/pred['btts_odds']:.1f}) -> Edge %{pred['btts_edge']:.1f} -> {'OYNA' if pred['btts_play'] else 'OYNAMA'}")
-        print(f"📈 Puanlar: Form={pred['form_score']:.1f}/45, Baskı={pred['pressure_score']:.1f}/40, H2H={pred['h2h_score']:.1f}/15, Bonuslar=+{pred['early_bonus']}+{pred['second_bonus']}, Cezası=%{(1-pred['referee_penalty'])*100:.0f}, Net={pred['net_total']:.1f}/110")
-        print("")
+            model_over_prob = VALUES(model_over_prob),
+            model_btts_prob = VALUES(model_btts_prob),
+            edge_over = VALUES(edge_over),
+            edge_btts = VALUES(edge_btts),
+            play_over = VALUES(play_over),
+            play_btts = VALUES(play_btts),
+            form_score = VALUES(form_score),
+            pressure_score = VALUES(pressure_score),
+            h2h_score = VALUES(h2h_score),
+            early_bonus = VALUES(early_bonus),
+            second_bonus = VALUES(second_bonus),
+            referee_penalty = VALUES(referee_penalty),
+            net_total_score = VALUES(net_total_score),
+            updated_at = NOW()
+        """
+        self.cursor.execute(sql, (
+            event_id, pred['date'], pred['home_team'], pred['away_team'], pred['category_id'],
+            pred['model_over_prob'], pred['model_btts_prob'], pred['over_odds'], pred['btts_odds'],
+            pred['over_edge'], pred['btts_edge'], pred['over_play'], pred['btts_play'],
+            pred['form_score'], pred['pressure_score'], pred['h2h_score'], pred['early_bonus'],
+            pred['second_bonus'], pred['referee_penalty'], pred['net_total']
+        ))
 
     def run(self):
         self.connect()
+        # Gelecek maçları al (bugün ve yarın, başlamamış, major turnuva)
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         today = dt.datetime.now(tz_tr).date()
         tomorrow = today + dt.timedelta(days=1)
+        ids_str = ','.join(map(str, MAJOR_TOURNAMENT_IDS))
         query = f"""
             SELECT event_id, start_utc, home_team, away_team, odds_o25, odds_btts_yes, category_id
             FROM results_football
             WHERE status IN ('notstarted', 'scheduled')
                 AND start_utc IN (%s, %s)
-                AND (tournament_id IN ({','.join(map(str, MAJOR_TOURNAMENT_IDS))}) OR category_id IN ({','.join(map(str, MAJOR_TOURNAMENT_IDS))}))
+                AND (tournament_id IN ({ids_str}) OR category_id IN ({ids_str}))
         """
         self.cursor.execute(query, (today, tomorrow))
         matches = self.cursor.fetchall()
         if not matches:
-            print("Bugün veya yarın major turnuva maçı bulunamadı.")
-            self.conn.close()
+            print("Bugün veya yarın oynanacak major turnuva maçı bulunamadı.")
+            self.close()
             return
+        
+        print(f"\n🔮 TAHMİN RAPORU - {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
         for match in matches:
+            # Hakem bilgisini al
             self.cursor.execute("SELECT referee FROM results_football WHERE event_id = %s", (match['event_id'],))
             ref_row = self.cursor.fetchone()
             match['referee'] = ref_row['referee'] if ref_row else None
             pred = self.predict_match(match)
             self.save_prediction(pred, match['event_id'])
-            self.print_report(pred)
-        print(f"✅ {len(matches)} maçın tahmini predictions tablosuna kaydedildi.")
-        self.conn.close()
+            # Konsola rapor yazdır
+            print("=" * 50)
+            print(f"🏆 {pred['home_team']} vs {pred['away_team']} (Lig ID: {pred['category_id']}) - {pred['date']}")
+            print(f"📊 2.5 Üst: %{pred['model_over_prob']:.1f} | KG Var: %{pred['model_btts_prob']:.1f}")
+            if pred['over_odds']:
+                edge_over = pred['over_edge']
+                print(f"💰 Over 2.5: Oran {pred['over_odds']:.2f} -> Edge %{edge_over:.1f} -> {'OYNA' if pred['over_play'] else 'OYNAMA'}")
+            if pred['btts_odds']:
+                edge_btts = pred['btts_edge']
+                print(f"💰 KG Var: Oran {pred['btts_odds']:.2f} -> Edge %{edge_btts:.1f} -> {'OYNA' if pred['btts_play'] else 'OYNAMA'}")
+        print(f"\n✅ {len(matches)} maçın tahmini predictions tablosuna kaydedildi.")
+        self.close()
 
 if __name__ == "__main__":
-    predictor = Predictor()
-    predictor.run()
+    engine = PredictionEngine()
+    engine.run()
