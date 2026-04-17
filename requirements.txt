@@ -1,6 +1,2 @@
-Run python predict.py
-Traceback (most recent call last):
-  File "/home/runner/work/tahmin/tahmin/predict.py", line 12, in <module>
-    import numpy as np
-ModuleNotFoundError: No module named 'numpy'
-Error: Process completed with exit code 1.   hata aldık kanka failed 13 minutes ago in 26m 44s
+mysql-connector-python>=8.0.0
+numpy>=1.21.0
