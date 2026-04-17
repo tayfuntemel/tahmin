@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 İstatistik tablolarını günceller (league_stats, team_dna, team_form_cache, referee_stats)
 Her çalıştırmada mevcut satırları günceller, yeni satır eklemez.
 NULL değerler 0 olarak ele alınır.
+UTF-8 karakter desteği eklendi.
 """
 
 import os
@@ -15,7 +17,10 @@ DB_CONFIG = {
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "database": os.getenv("DB_NAME"),
-    "port": int(os.getenv("DB_PORT", 3306))
+    "port": int(os.getenv("DB_PORT", 3306)),
+    "charset": "utf8mb4",
+    "use_unicode": True,
+    "collation": "utf8mb4_unicode_ci"
 }
 
 class StatsUpdater:
@@ -30,7 +35,7 @@ class StatsUpdater:
         self._create_tables()
 
     def _create_tables(self):
-        """Tablolar yoksa oluştur"""
+        """Tablolar yoksa oluştur (utf8mb4)"""
         # league_stats
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS league_stats (
@@ -42,7 +47,7 @@ class StatsUpdater:
                 over25_ratio FLOAT,
                 match_count INT,
                 last_updated DATE
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         # team_dna
         self.cursor.execute("""
@@ -53,7 +58,7 @@ class StatsUpdater:
                 avg_corners FLOAT,
                 total_matches INT,
                 last_updated DATE
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         # team_form_cache (tek satır, tarihsiz)
         self.cursor.execute("""
@@ -69,7 +74,7 @@ class StatsUpdater:
                 last_3_avg_corners FLOAT,
                 last_3_avg_possession FLOAT,
                 last_updated DATE
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         # referee_stats
         self.cursor.execute("""
@@ -78,9 +83,9 @@ class StatsUpdater:
                 avg_goals FLOAT,
                 match_count INT,
                 last_updated DATE
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
-        print("[DB] Tablolar kontrol edildi/oluşturuldu.")
+        print("[DB] Tablolar kontrol edildi/oluşturuldu (utf8mb4).")
 
     def close(self):
         if self.cursor:
@@ -123,11 +128,11 @@ class StatsUpdater:
             """
             self.cursor.execute(insert_sql, (
                 row['category_id'], 
-                float(row['avg_goals']) if row['avg_goals'] else 0,
-                float(row['avg_shot_on']) if row['avg_shot_on'] else 0,
-                float(row['avg_corners']) if row['avg_corners'] else 0,
-                float(row['btts_ratio']) if row['btts_ratio'] else 0,
-                float(row['over25_ratio']) if row['over25_ratio'] else 0,
+                float(row['avg_goals']) if row['avg_goals'] is not None else 0,
+                float(row['avg_shot_on']) if row['avg_shot_on'] is not None else 0,
+                float(row['avg_corners']) if row['avg_corners'] is not None else 0,
+                float(row['btts_ratio']) if row['btts_ratio'] is not None else 0,
+                float(row['over25_ratio']) if row['over25_ratio'] is not None else 0,
                 row['match_count'], today
             ))
         print(f"[league_stats] {len(rows)} lig güncellendi.")
