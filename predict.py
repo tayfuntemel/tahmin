@@ -2,14 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Tahmin scripti - cache tablolarını (league_stats, team_form_cache, referee_stats) kullanır.
-Master prompt'taki tüm kurallar uygulanır:
-- Form puanı (max45)
-- Hücum baskısı (max40) – toplam şut ve kesici kural ile
-- H2H puanı (max15)
-- Erken Ateş bonusu (gerçek ilk yarı gol ortalaması ile)
-- İkinci yarı reaksiyonu (0-0 dönüş oranı ile)
-- Hakem etkisi
-- Value tespiti (edge >= 5)
+VALUE KONTROLÜ GEVŞETİLDİ / KALDIRILDI: edge >= VALUE_EDGE_THRESHOLD (varsayılan 0)
 """
 
 import os
@@ -35,6 +28,14 @@ MAJOR_TOURNAMENT_IDS = {
     681, 877, 1061, 1107, 1427, 10812, 16753, 19232, 34363, 51702, 52653, 58560, 
     64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
 }
+
+# ============================================================
+# VALUE EŞİĞİ – burayı değiştirerek kontrolü gevşet/sıkılaştır
+# 0 = her zaman oyna (value kontrolü yok)
+# 2 = hafif gevşek
+# 5 = standart
+# ============================================================
+VALUE_EDGE_THRESHOLD = 0   # <--- İstediğin değeri gir
 
 class PredictionEngine:
     def __init__(self):
@@ -94,7 +95,7 @@ class PredictionEngine:
         row = self.cursor.fetchone()
         if row:
             return row
-        # Varsayılan değerler (prompt'taki gibi)
+        # Varsayılan değerler
         return {
             'avg_goals': 2.5,
             'avg_shot_on': 8.0,
@@ -111,7 +112,6 @@ class PredictionEngine:
         row = self.cursor.fetchone()
         if row:
             return row
-        # Varsayılan (yetersiz veri durumunda)
         return {
             'last_10_avg_goals': 1.0,
             'last_10_avg_shot_on': 4.0,
@@ -154,47 +154,33 @@ class PredictionEngine:
         over25 = sum(1 for m in matches if (m['ft_home'] or 0) + (m['ft_away'] or 0) > 2.5) / total
         return btts, over25
 
-    # ---------------- ADIM 2: FORM PUANI (max45) ----------------
     def calculate_form_score(self, home_cache, away_cache, league_avg_goals):
-        # Genel form (son10) %70 ağırlık
         general_avg = (home_cache['last_10_avg_goals'] + away_cache['last_10_avg_goals']) / 2.0
         norm_general = min(general_avg / league_avg_goals, 1.5) if league_avg_goals > 0 else 1.0
         general_score = min(31.5, general_avg * 7 * norm_general)
-
-        # Özel form (ev iç saha son5, deplasman dış saha son5) %30 ağırlık
         specific_avg = (home_cache['home_last_5_avg_goals'] + away_cache['away_last_5_avg_goals']) / 2.0
         norm_specific = min(specific_avg / league_avg_goals, 1.5) if league_avg_goals > 0 else 1.0
         specific_score = min(13.5, specific_avg * 3 * norm_specific)
-
         return general_score + specific_score
 
-    # ---------------- ADIM 3: HÜCUM BASKISI (max40) ----------------
     def calculate_attack_pressure(self, home_cache, away_cache, league_avg_shot_on, league_avg_total_shots, league_avg_corners):
         def pressure(cache):
-            # Normalizasyon
             norm_shot_on = min(cache['last_3_avg_shot_on'] / league_avg_shot_on, 1.5) if league_avg_shot_on > 0 else 1.0
             norm_total_shots = min(cache['last_3_avg_total_shots'] / league_avg_total_shots, 1.5) if league_avg_total_shots > 0 else 1.0
             norm_corners = min(cache['last_3_avg_corners'] / league_avg_corners, 1.5) if league_avg_corners > 0 else 1.0
             norm_poss = min(cache['last_3_avg_possession'] / 50.0, 1.5)
-
-            # Formül: (isabetli şut *3) + (korner *1.5) + (toplam şut *1) + (topla oynama *0.2)
             raw = (cache['last_3_avg_shot_on'] * 3 * norm_shot_on) + \
                   (cache['last_3_avg_corners'] * 1.5 * norm_corners) + \
                   (cache['last_3_avg_total_shots'] * 1 * norm_total_shots) + \
                   (cache['last_3_avg_possession'] * 0.2 * norm_poss)
-
-            # Kesici kural: son maçta isabetli şut <= 1 ise topla oynama katkısını iptal et
             if cache['last_match_shot_on'] <= 1:
                 raw -= (cache['last_3_avg_possession'] * 0.2 * norm_poss)
-
-            return raw / 3.0  # 3 maç ortalaması
-
+            return raw / 3.0
         home_p = pressure(home_cache)
         away_p = pressure(away_cache)
         total = (home_p + away_p) / 2.0
         return min(40.0, total)
 
-    # ---------------- ADIM 4: H2H PUANI (max15) ----------------
     def calculate_h2h_score(self, h2h_btts, h2h_over25, league_btts, league_over25):
         if h2h_btts is None:
             return 0.0
@@ -203,7 +189,6 @@ class PredictionEngine:
         raw = ((h2h_btts * norm_btts + h2h_over25 * norm_over) / 2.0) * 15
         return min(15.0, raw)
 
-    # ---------------- ADIM 5: ERKEN ATEŞ BONUSU (max +5) ----------------
     def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_goals):
         home_fh = home_cache['last_10_avg_first_half_goals']
         away_fh = away_cache['last_10_avg_first_half_goals']
@@ -213,12 +198,10 @@ class PredictionEngine:
             return 3
         return 0
 
-    # ---------------- ADIM 5: İKİNCİ YARI REAKSİYONU (max +5) ----------------
     def calculate_second_half_bonus(self, home_cache, away_cache, league_zero_zero_comeback):
         home_zz = home_cache['zero_zero_comeback_ratio']
         away_zz = away_cache['zero_zero_comeback_ratio']
         if home_zz is None or away_zz is None:
-            # Alternatif: genel KG eğilimi
             home_tend = home_cache['last_10_btts_ratio']
             away_tend = away_cache['last_10_btts_ratio']
             avg_tend = (home_tend + away_tend) / 2.0
@@ -234,7 +217,6 @@ class PredictionEngine:
             return 2
         return 0
 
-    # ---------------- ANA TAHMİN ----------------
     def predict_match(self, match):
         home = match['home_team']
         away = match['away_team']
@@ -261,7 +243,7 @@ class PredictionEngine:
         net_total = raw_total * referee_penalty
         max_possible = 110.0
         model_prob = min(99.0, (net_total / max_possible) * 100)
-        kg_prob = model_prob * 0.95   # KG Var için küçük düzeltme
+        kg_prob = model_prob * 0.95
 
         over_odds = match.get('odds_o25')
         btts_odds = match.get('odds_btts_yes')
@@ -284,16 +266,16 @@ class PredictionEngine:
             'net_total': net_total,
         }
 
-        # Value hesaplamaları
+        # VALUE KONTROLÜ – GEVŞETİLMİŞ EŞİK
         if over_odds and over_odds > 0:
             result['over_edge'] = model_prob - (100 / over_odds)
-            result['over_play'] = result['over_edge'] >= 5
+            result['over_play'] = result['over_edge'] >= VALUE_EDGE_THRESHOLD
         else:
             result['over_edge'] = None
             result['over_play'] = False
         if btts_odds and btts_odds > 0:
             result['btts_edge'] = kg_prob - (100 / btts_odds)
-            result['btts_play'] = result['btts_edge'] >= 5
+            result['btts_play'] = result['btts_edge'] >= VALUE_EDGE_THRESHOLD
         else:
             result['btts_edge'] = None
             result['btts_play'] = False
@@ -334,7 +316,6 @@ class PredictionEngine:
 
     def run(self):
         self.connect()
-        # Gelecek maçları al (bugün ve yarın, başlamamış, major turnuva)
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         today = dt.datetime.now(tz_tr).date()
         tomorrow = today + dt.timedelta(days=1)
@@ -353,9 +334,8 @@ class PredictionEngine:
             self.close()
             return
 
-        print(f"\n🔮 TAHMİN RAPORU - {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+        print(f"\n🔮 TAHMİN RAPORU - {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} (Edge eşiği: {VALUE_EDGE_THRESHOLD})\n")
         for match in matches:
-            # Hakem bilgisini al
             self.cursor.execute("SELECT referee FROM results_football WHERE event_id = %s", (match['event_id'],))
             ref_row = self.cursor.fetchone()
             match['referee'] = ref_row['referee'] if ref_row else None
