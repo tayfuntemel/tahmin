@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 Futbol Maç Tahmin Sistemi - 2.5 Üst ve KG Var Value Bahisleri
-Metodoloji: Form, Hücum Baskısı, H2H, Bonuslar, Hakem Etkisi, Value Tespiti
+- Verileri results_football tablosundan okur
+- Tahminleri predictions tablosuna kaydeder (tablo yoksa oluşturur)
+- Konsola rapor basar
 """
 
 import os
 import datetime as dt
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 import mysql.connector
 import numpy as np
 from collections import defaultdict
@@ -29,7 +31,6 @@ MAJOR_TOURNAMENT_IDS = {
     64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
 }
 
-# Varsayılan lig değerleri (veri yoksa kullanılır)
 DEFAULT_LEAGUE_STATS = {
     "avg_goals": 2.5,
     "avg_shot_on": 8.0,
@@ -38,7 +39,7 @@ DEFAULT_LEAGUE_STATS = {
     "over25_ratio": 0.45
 }
 
-# ==================== VERİTABANI BAĞLANTISI ====================
+# ==================== VERİTABANI ====================
 class Database:
     def __init__(self):
         self.conn = None
@@ -48,6 +49,46 @@ class Database:
         self.conn = mysql.connector.connect(**DB_CONFIG)
         self.conn.autocommit = True
         self.cursor = self.conn.cursor(dictionary=True)
+        self._create_predictions_table()
+
+    def _create_predictions_table(self):
+        """predictions tablosu yoksa oluştur"""
+        create_sql = """
+        CREATE TABLE IF NOT EXISTS predictions (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            event_id BIGINT UNSIGNED NOT NULL,
+            prediction_date DATE NOT NULL,
+            match_date DATE NOT NULL,
+            home_team VARCHAR(128) NOT NULL,
+            away_team VARCHAR(128) NOT NULL,
+            category_id INT NULL,
+            model_over_prob FLOAT,
+            model_btts_prob FLOAT,
+            odds_over FLOAT,
+            odds_btts FLOAT,
+            edge_over FLOAT,
+            edge_btts FLOAT,
+            play_over BOOLEAN,
+            play_btts BOOLEAN,
+            form_score FLOAT,
+            pressure_score FLOAT,
+            h2h_score FLOAT,
+            early_bonus INT,
+            second_bonus INT,
+            referee_penalty FLOAT,
+            net_total_score FLOAT,
+            actual_ft_home INT NULL,
+            actual_ft_away INT NULL,
+            actual_over25 BOOLEAN NULL,
+            actual_btts BOOLEAN NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_match_date (match_date),
+            INDEX idx_play (play_over, play_btts),
+            UNIQUE KEY unique_prediction (event_id, prediction_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+        self.cursor.execute(create_sql)
 
     def close(self):
         if self.cursor:
@@ -56,7 +97,6 @@ class Database:
             self.conn.close()
 
     def get_league_stats(self) -> Dict[int, Dict]:
-        """Lig bazlı (category_id) istatistikleri hesaplar veya cache'ten alır."""
         query = """
             SELECT 
                 category_id,
@@ -85,29 +125,7 @@ class Database:
             }
         return stats
 
-    def get_team_dna(self, team_key: str) -> Dict:
-        """Takım DNA'sı (tüm geçmiş ortalamalar)"""
-        query = """
-            SELECT 
-                AVG(ft_home) as avg_goals_scored,
-                AVG(shot_on_h) as avg_shot_on,
-                AVG(corn_h) as avg_corners
-            FROM results_football
-            WHERE status IN ('finished', 'ended')
-                AND (home_team = %s OR away_team = %s)
-        """
-        self.cursor.execute(query, (team_key, team_key))
-        row = self.cursor.fetchone()
-        if row and row['avg_goals_scored']:
-            return {
-                'avg_goals': float(row['avg_goals_scored']),
-                'avg_shot_on': float(row['avg_shot_on'] or 0),
-                'avg_corners': float(row['avg_corners'] or 0)
-            }
-        return {'avg_goals': 1.0, 'avg_shot_on': 4.0, 'avg_corners': 4.0}
-
     def get_team_form(self, team_key: str, home_only: bool = False, away_only: bool = False, last_n: int = 10) -> List[Dict]:
-        """Takımın son N maç formu (goller, şutlar, korner, possession vb.)"""
         if home_only:
             condition = "home_team = %s"
         elif away_only:
@@ -122,7 +140,7 @@ class Database:
                 shot_on_h, shot_on_a,
                 corn_h, corn_a,
                 poss_h, poss_a,
-                status
+                home_team, away_team
             FROM results_football
             WHERE status IN ('finished', 'ended') AND {condition}
             ORDER BY start_utc DESC, start_time_utc DESC
@@ -135,7 +153,6 @@ class Database:
         return self.cursor.fetchall()
 
     def get_h2h_matches(self, team1_key: str, team2_key: str, last_n: int = 10) -> List[Dict]:
-        """İki takım arasındaki son N maç"""
         query = """
             SELECT ft_home, ft_away
             FROM results_football
@@ -148,7 +165,6 @@ class Database:
         return self.cursor.fetchall()
 
     def get_upcoming_matches(self) -> List[Dict]:
-        """Bugün ve yarın oynanacak, başlamamış major turnuva maçları"""
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         today = dt.datetime.now(tz_tr).date()
         tomorrow = today + dt.timedelta(days=1)
@@ -167,7 +183,6 @@ class Database:
         return self.cursor.fetchall()
 
     def get_referee_avg_goals(self, referee_name: str) -> Optional[float]:
-        """Hakemin yönettiği maçlardaki ortalama gol sayısı (lig ortalamasına göre normalize edilmemiş)"""
         if not referee_name:
             return None
         query = """
@@ -179,33 +194,71 @@ class Database:
         row = self.cursor.fetchone()
         return float(row['avg_goals']) if row and row['avg_goals'] else None
 
+    def save_prediction(self, pred: Dict, event_id: int):
+        insert_sql = """
+            INSERT INTO predictions (
+                event_id, prediction_date, match_date, home_team, away_team, category_id,
+                model_over_prob, model_btts_prob, odds_over, odds_btts,
+                edge_over, edge_btts, play_over, play_btts,
+                form_score, pressure_score, h2h_score, early_bonus, second_bonus,
+                referee_penalty, net_total_score
+            ) VALUES (
+                %s, CURDATE(), %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                model_over_prob = VALUES(model_over_prob),
+                model_btts_prob = VALUES(model_btts_prob),
+                odds_over = VALUES(odds_over),
+                odds_btts = VALUES(odds_btts),
+                edge_over = VALUES(edge_over),
+                edge_btts = VALUES(edge_btts),
+                play_over = VALUES(play_over),
+                play_btts = VALUES(play_btts),
+                form_score = VALUES(form_score),
+                pressure_score = VALUES(pressure_score),
+                h2h_score = VALUES(h2h_score),
+                early_bonus = VALUES(early_bonus),
+                second_bonus = VALUES(second_bonus),
+                referee_penalty = VALUES(referee_penalty),
+                net_total_score = VALUES(net_total_score),
+                updated_at = NOW()
+        """
+        self.cursor.execute(insert_sql, (
+            event_id, pred['date'], pred['home_team'], pred['away_team'], pred['category_id'],
+            pred['model_over_prob'], pred['model_btts_prob'],
+            pred['over_odds'], pred['btts_odds'],
+            pred['over_edge'], pred['btts_edge'],
+            pred['over_play'], pred['btts_play'],
+            pred['form_score'], pred['pressure_score'], pred['h2h_score'],
+            pred['early_bonus'], pred['second_bonus'],
+            pred['referee_penalty'], pred['net_total']
+        ))
+
 # ==================== TAHMİN MOTORU ====================
 class PredictionEngine:
     def __init__(self, db: Database):
         self.db = db
         self.league_stats = db.get_league_stats()
-        self.team_dna_cache = {}
 
     def _get_team_key(self, team_name: str, category_id: int) -> str:
-        """Benzersiz takım anahtarı: isim|category_id"""
         return f"{team_name}|{category_id}"
 
     def _normalize(self, value: float, league_avg: float, max_ratio: float = 1.5) -> float:
-        """Lig ortalamasına göre normalizasyon (cap = max_ratio)"""
         if league_avg <= 0:
             return 1.0
         return min(value / league_avg, max_ratio)
 
     def _get_league_stats(self, category_id: int) -> Dict:
-        """Lig istatistiklerini getir, yoksa varsayılanı kullan"""
         return self.league_stats.get(category_id, DEFAULT_LEAGUE_STATS.copy())
 
     def calculate_form_score(self, home_team_key: str, away_team_key: str, category_id: int) -> float:
-        """Adım 2 – Form ve Karakter Puanı (max 45)"""
         league = self._get_league_stats(category_id)
         league_avg_goals = league['avg_goals']
 
-        # Home takımının son 10 maç gol ortalaması (tüm maçlar)
         home_matches = self.db.get_team_form(home_team_key, last_n=10)
         away_matches = self.db.get_team_form(away_team_key, last_n=10)
         
@@ -222,11 +275,9 @@ class PredictionEngine:
         away_avg = avg_goals_from_matches(away_matches, away_team_key)
         general_avg = (home_avg + away_avg) / 2.0
         
-        # Normalizasyon
         norm_general = self._normalize(general_avg, league_avg_goals)
         general_score = min(31.5, general_avg * 7 * norm_general)
         
-        # Özel form (ev sahibi iç saha, deplasman dış saha)
         home_home = self.db.get_team_form(home_team_key, home_only=True, last_n=5)
         away_away = self.db.get_team_form(away_team_key, away_only=True, last_n=5)
         
@@ -240,26 +291,22 @@ class PredictionEngine:
         return general_score + specific_score
 
     def calculate_attack_pressure(self, home_team_key: str, away_team_key: str, category_id: int) -> float:
-        """Adım 3 – Hücum Baskısı ve Tempo Puanı (max 40)"""
         league = self._get_league_stats(category_id)
         
-        def get_last3_stats(team_key, home_only=False, away_only=False):
-            matches = self.db.get_team_form(team_key, home_only=home_only, away_only=away_only, last_n=3)
-            if len(matches) < 3:
-                matches = self.db.get_team_form(team_key, last_n=3)  # fallback
+        def get_last3_stats(team_key):
+            matches = self.db.get_team_form(team_key, last_n=3)
             shot_on, corn, shot, poss = [], [], [], []
             for m in matches:
                 if m['home_team'] == team_key:
                     shot_on.append(m['shot_on_h'] or 0)
                     corn.append(m['corn_h'] or 0)
-                    shot.append((m['shot_on_h'] or 0) + (m.get('shot_h',0) or 0))  # total shot approximated
+                    shot.append((m['shot_on_h'] or 0) + (m.get('shot_h',0) or 0))
                     poss.append(m['poss_h'] or 0)
                 else:
                     shot_on.append(m['shot_on_a'] or 0)
                     corn.append(m['corn_a'] or 0)
                     shot.append((m['shot_on_a'] or 0) + (m.get('shot_a',0) or 0))
                     poss.append(m['poss_a'] or 0)
-            # Kesici kural: son maçta isabetli şut <=1 ise poss katkısını sıfırla
             last_shot_on = shot_on[-1] if shot_on else 0
             poss_factor = 0.0 if last_shot_on <= 1 else 1.0
             return {
@@ -274,7 +321,7 @@ class PredictionEngine:
         
         norm_shot = self._normalize((home_stats['shot_on'] + away_stats['shot_on'])/2, league['avg_shot_on'])
         norm_corn = self._normalize((home_stats['corn'] + away_stats['corn'])/2, league['avg_corners'])
-        norm_poss = self._normalize((home_stats['poss'] + away_stats['poss'])/2, 50.0)  # possession ort 50
+        norm_poss = self._normalize((home_stats['poss'] + away_stats['poss'])/2, 50.0)
         
         home_pressure = (
             home_stats['shot_on'] * 3 * norm_shot +
@@ -294,7 +341,6 @@ class PredictionEngine:
         return min(40.0, pressure)
 
     def calculate_h2h_score(self, home_team_key: str, away_team_key: str, category_id: int) -> float:
-        """Adım 4 – H2H Geçmiş Karşılaşmalar (max 15)"""
         h2h = self.db.get_h2h_matches(home_team_key, away_team_key, last_n=10)
         if not h2h:
             return 0.0
@@ -314,11 +360,9 @@ class PredictionEngine:
         return min(15.0, score)
 
     def calculate_early_goal_bonus(self, home_team_key: str, away_team_key: str, category_id: int) -> int:
-        """Adım 5 – Erken Ateş Bonusu (max +5)"""
         league = self._get_league_stats(category_id)
         league_first_half_avg = league['avg_goals'] * 0.45
         
-        # Takımların ilk yarı gol ortalamalarını tahmin et (toplam golün %40'ı kabul ediliyor)
         home_matches = self.db.get_team_form(home_team_key, last_n=10)
         away_matches = self.db.get_team_form(away_team_key, last_n=10)
         
@@ -342,14 +386,11 @@ class PredictionEngine:
         return 0
 
     def calculate_second_half_reaction_bonus(self, home_team_key: str, away_team_key: str, category_id: int) -> int:
-        """Adım 5 – İkinci Yarı Reaksiyonu Bonusu (max +5)"""
         league = self._get_league_stats(category_id)
-        # Basitleştirilmiş: takımların genel KG eğilimine bak
         home_matches = self.db.get_team_form(home_team_key, last_n=10)
         away_matches = self.db.get_team_form(away_team_key, last_n=10)
         
         def btts_tendency(team_key, matches):
-            # Takımın oynadığı maçlarda karşılıklı gol olma oranı
             btts = 0
             total = 0
             for m in matches:
@@ -375,7 +416,6 @@ class PredictionEngine:
         return 0
 
     def calculate_referee_penalty(self, referee_name: Optional[str], category_id: int) -> float:
-        """Adım 6 – Hakem Etkisi (ceza çarpanı)"""
         if not referee_name:
             return 1.0
         league = self._get_league_stats(category_id)
@@ -385,17 +425,13 @@ class PredictionEngine:
         return 1.0
 
     def predict_match(self, match: Dict) -> Dict:
-        """Tek bir maç için tahmin yapar"""
         home_team = match['home_team']
         away_team = match['away_team']
-        category_id = match['category_id']
-        if not category_id:
-            category_id = 0  # bilinmiyorsa varsayılan
+        category_id = match['category_id'] or 0
         
         home_key = self._get_team_key(home_team, category_id)
         away_key = self._get_team_key(away_team, category_id)
         
-        # Hesaplamalar
         form_score = self.calculate_form_score(home_key, away_key, category_id)
         pressure_score = self.calculate_attack_pressure(home_key, away_key, category_id)
         h2h_score = self.calculate_h2h_score(home_key, away_key, category_id)
@@ -405,18 +441,16 @@ class PredictionEngine:
         
         raw_total = form_score + pressure_score + h2h_score + early_bonus + second_bonus
         net_total = raw_total * referee_penalty
-        max_possible = 110.0  # 45+40+15+5+5
+        max_possible = 110.0
         model_prob = min(99.0, (net_total / max_possible) * 100)
-        
-        # KG için küçük düzeltme (isteğe bağlı)
         kg_prob = model_prob * 0.95
         
-        # Value kontrolü
         over_odds = match.get('odds_o25')
         btts_odds = match.get('odds_btts_yes')
         
         result = {
-            'match': f"{home_team} vs {away_team}",
+            'home_team': home_team,
+            'away_team': away_team,
             'date': match['start_utc'],
             'category_id': category_id,
             'model_over_prob': model_prob,
@@ -433,29 +467,28 @@ class PredictionEngine:
             'league_stats': self._get_league_stats(category_id)
         }
         
-        # Value kararı
         if over_odds and over_odds > 0:
             book_prob_over = 100 / over_odds
             result['over_edge'] = model_prob - book_prob_over
             result['over_play'] = result['over_edge'] >= 5
         else:
-            result['over_play'] = False
             result['over_edge'] = None
+            result['over_play'] = False
         
         if btts_odds and btts_odds > 0:
             book_prob_btts = 100 / btts_odds
             result['btts_edge'] = kg_prob - book_prob_btts
             result['btts_play'] = result['btts_edge'] >= 5
         else:
-            result['btts_play'] = False
             result['btts_edge'] = None
+            result['btts_play'] = False
         
         return result
 
-# ==================== RAPOR OLUŞTURUCU ====================
+# ==================== RAPOR ====================
 def print_report(pred: Dict):
     print("=" * 50)
-    print(f"🏆 {pred['match']} (Lig ID: {pred['category_id']}) - {pred['date']}")
+    print(f"🏆 {pred['home_team']} vs {pred['away_team']} (Lig ID: {pred['category_id']}) - {pred['date']}")
     print("=" * 50)
     print(f"📊 Model Olasılık:")
     print(f"   - 2.5 Üst: %{pred['model_over_prob']:.1f}")
@@ -495,6 +528,7 @@ def print_report(pred: Dict):
     print(f"\n🔍 Takım Kimliği Notu: Takımlar (isim + kategori ID) ile ayrıştırılmıştır.")
     print("")
 
+# ==================== MAIN ====================
 def main():
     db = Database()
     db.connect()
@@ -503,18 +537,22 @@ def main():
     upcoming = db.get_upcoming_matches()
     if not upcoming:
         print("Bugün veya yarın oynanacak major turnuva maçı bulunamadı.")
+        db.close()
         return
     
     print(f"\n🔮 TAHMİN RAPORU - {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     for match in upcoming:
-        # Hakem bilgisini çek (opsiyonel)
         db.cursor.execute("SELECT referee FROM results_football WHERE event_id = %s", (match['event_id'],))
         ref_row = db.cursor.fetchone()
         match['referee'] = ref_row['referee'] if ref_row else None
         
         pred = engine.predict_match(match)
         print_report(pred)
+        
+        # Tahmini veritabanına kaydet
+        db.save_prediction(pred, match['event_id'])
     
+    print(f"\n✅ {len(upcoming)} maçın tahmini predictions tablosuna kaydedildi.")
     db.close()
 
 if __name__ == "__main__":
