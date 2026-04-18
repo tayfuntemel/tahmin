@@ -223,23 +223,31 @@ class PredictionEngine:
     return 0
 
     def calculate_second_half_bonus(self, home_cache, away_cache, league_zero_zero_comeback):
-        home_zz = home_cache['zero_zero_comeback_ratio']
-        away_zz = away_cache['zero_zero_comeback_ratio']
-        if home_zz is None or away_zz is None:
-            home_tend = home_cache['last_10_btts_ratio']
-            away_tend = away_cache['last_10_btts_ratio']
-            avg_tend = (home_tend + away_tend) / 2.0
-            if avg_tend > league_zero_zero_comeback * 1.2:
-                return 5
-            elif avg_tend > league_zero_zero_comeback * 1.1:
-                return 2
-            return 0
-        avg_zz = (home_zz + away_zz) / 2.0
+    home_zz = home_cache.get('zero_zero_comeback_ratio', 0)
+    away_zz = away_cache.get('zero_zero_comeback_ratio', 0)
+    
+    # Ortalama reaksiyon oranı
+    avg_zz = (home_zz + away_zz) / 2.0
+    
+    # Eğer takımların İY 0-0'dan geri dönüş verisi varsa onu kullan (Daha isabetli)
+    if avg_zz > 0:
         if avg_zz > league_zero_zero_comeback * 1.2:
             return 5
-        elif avg_zz > league_zero_zero_comeback * 1.1:
+        elif avg_zz > league_zero_zero_comeback:
             return 2
-        return 0
+    
+    # Veri yoksa veya 0 ise, takımların genel KG Var oranlarını 
+    # ligin genel KG Var oranıyla kıyasla (Daha tutarlı bir alternatif)
+    else:
+        home_btts = home_cache['last_10_btts_ratio']
+        away_btts = away_cache['last_10_btts_ratio']
+        avg_btts = (home_btts + away_btts) / 2.0
+        
+        # Lig ortalaması varsayılan %45 (0.45) kabul edilebilir veya DB'den çekilebilir
+        if avg_btts > 0.55: # KG Var eğilimi çok yüksekse
+            return 3
+    
+    return 0
 
     def predict_match(self, match):
         home = match['home_team']
