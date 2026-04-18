@@ -3,7 +3,7 @@
 """
 Tahmin scripti - cache tablolarını (league_stats, team_form_cache, referee_stats) kullanır.
 Master prompt'taki tüm kurallar uygulanır.
-Düzeltilmiş version: early_bonus ve second_bonus artık doğru hesaplanır.
+1.5 Üst marketi de eklenmiştir.
 """
 
 import os
@@ -45,6 +45,7 @@ class PredictionEngine:
         self._create_predictions_table()
 
     def _create_predictions_table(self):
+        # Ana tabloyu oluştur (ilk seferde)
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -78,7 +79,24 @@ class PredictionEngine:
                 UNIQUE KEY unique_prediction (event_id, prediction_date)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
-        print("[DB] predictions tablosu hazır.")
+
+        # 1.5 Üst için yeni sütunları ekle (eğer yoklarsa)
+        new_columns = [
+            ("model_over15_prob", "FLOAT"),
+            ("odds_over15", "FLOAT"),
+            ("edge_over15", "FLOAT"),
+            ("play_over15", "BOOLEAN")
+        ]
+        for col_name, col_type in new_columns:
+            try:
+                self.cursor.execute(f"ALTER TABLE predictions ADD COLUMN {col_name} {col_type}")
+                print(f"[DB] predictions tablosuna {col_name} sütunu eklendi.")
+            except mysql.connector.Error as err:
+                if err.errno == 1060:  # Duplicate column name
+                    pass
+                else:
+                    print(f"[DB] Uyarı: {err}")
+        print("[DB] predictions tablosu hazır (1.5 Üst sütunları dahil).")
 
     def close(self):
         if self.cursor:
@@ -100,7 +118,6 @@ class PredictionEngine:
                 'avg_first_half_goals': float(row['avg_first_half_goals']) if row['avg_first_half_goals'] is not None else 1.1,
                 'zero_zero_comeback_ratio': float(row['zero_zero_comeback_ratio']) if row['zero_zero_comeback_ratio'] is not None else 0.15
             }
-        # Varsayılan
         return {
             'avg_goals': 2.5,
             'avg_shot_on': 8.0,
@@ -131,7 +148,6 @@ class PredictionEngine:
                 'last_3_avg_possession': float(row['last_3_avg_possession']) if row['last_3_avg_possession'] is not None else 45.0,
                 'last_match_shot_on': int(row['last_match_shot_on']) if row['last_match_shot_on'] is not None else 4
             }
-        # Varsayılan
         return {
             'last_10_avg_goals': 1.0,
             'last_10_avg_shot_on': 4.0,
@@ -210,14 +226,9 @@ class PredictionEngine:
         return min(15.0, raw)
 
     def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_goals):
-        # Takımların son 10 maçta İY attıkları gollerin ortalaması
         home_fh = home_cache['last_10_avg_first_half_goals']
         away_fh = away_cache['last_10_avg_first_half_goals']
-
-        # Takımların toplam İY gol beklentisi (Maç potansiyeli)
         combined_fh = home_fh + away_fh
-
-        # Kıyaslamayı ligin toplam İY gol ortalamasına göre yapıyoruz
         if combined_fh > league_avg_first_half_goals * 1.2:
             return 5
         elif combined_fh > league_avg_first_half_goals:
@@ -225,30 +236,20 @@ class PredictionEngine:
         return 0
 
     def calculate_second_half_bonus(self, home_cache, away_cache, league_zero_zero_comeback):
-        # Takımların İY 0-0 biten maçlarda KG Var yapma oranları
         home_zz = home_cache.get('zero_zero_comeback_ratio', 0)
         away_zz = away_cache.get('zero_zero_comeback_ratio', 0)
-
-        # Ortalama reaksiyon (geri dönüş) oranı
         avg_zz = (home_zz + away_zz) / 2.0
-
-        # Eğer veri varsa (0'dan büyükse) ligin geri dönüş ortalamasıyla kıyasla
         if avg_zz > 0:
             if avg_zz > league_zero_zero_comeback * 1.2:
                 return 5
             elif avg_zz > league_zero_zero_comeback:
                 return 2
-
-        # Veri yoksa, takımların genel KG Var (BTTS) eğilimlerine bak
         else:
             home_btts = home_cache['last_10_btts_ratio']
             away_btts = away_cache['last_10_btts_ratio']
             avg_btts = (home_btts + away_btts) / 2.0
-
-            # KG Var (BTTS) oranı %55'ten yüksekse 3 puan bonus ver
             if avg_btts > 0.55:
                 return 3
-
         return 0
 
     def predict_match(self, match):
@@ -276,10 +277,17 @@ class PredictionEngine:
         raw_total = form_score + pressure_score + h2h_score + early_bonus + second_bonus
         net_total = raw_total * referee_penalty
         max_possible = 110.0
-        model_prob = min(99.0, (net_total / max_possible) * 100)
-        kg_prob = model_prob * 0.95
+        model_over25_prob = min(99.0, (net_total / max_possible) * 100)
+        model_btts_prob = model_over25_prob * 0.95
 
-        over_odds = match.get('odds_o25')
+        # 1.5 Üst olasılığı: model_over25_prob'dan daha yüksek olmalı.
+        # Basit bir dönüşüm: 1.5 Üst olasılığı = 2.5 Üst olasılığı + (100 - 2.5 Üst olasılığı) * 0.3
+        # Bu, 2.5 Üst %60 ise 1.5 Üst ~%72 gibi bir değer verir.
+        model_over15_prob = model_over25_prob + (100 - model_over25_prob) * 0.3
+        model_over15_prob = min(99.0, model_over15_prob)
+
+        over25_odds = match.get('odds_o25')
+        over15_odds = match.get('odds_o15')
         btts_odds = match.get('odds_btts_yes')
 
         result = {
@@ -287,9 +295,11 @@ class PredictionEngine:
             'away_team': away,
             'date': match['start_utc'],
             'category_id': cat_id,
-            'model_over_prob': model_prob,
-            'model_btts_prob': kg_prob,
-            'over_odds': over_odds,
+            'model_over_prob': model_over25_prob,
+            'model_over15_prob': model_over15_prob,
+            'model_btts_prob': model_btts_prob,
+            'over_odds': over25_odds,
+            'over15_odds': over15_odds,
             'btts_odds': btts_odds,
             'form_score': form_score,
             'pressure_score': pressure_score,
@@ -300,14 +310,25 @@ class PredictionEngine:
             'net_total': net_total,
         }
 
-        if over_odds and over_odds > 0:
-            result['over_edge'] = model_prob - (100 / over_odds)
+        # 2.5 Üst
+        if over25_odds and over25_odds > 0:
+            result['over_edge'] = model_over25_prob - (100 / over25_odds)
             result['over_play'] = result['over_edge'] >= VALUE_EDGE_THRESHOLD
         else:
             result['over_edge'] = None
             result['over_play'] = False
+
+        # 1.5 Üst
+        if over15_odds and over15_odds > 0:
+            result['over15_edge'] = model_over15_prob - (100 / over15_odds)
+            result['over15_play'] = result['over15_edge'] >= VALUE_EDGE_THRESHOLD
+        else:
+            result['over15_edge'] = None
+            result['over15_play'] = False
+
+        # KG Var
         if btts_odds and btts_odds > 0:
-            result['btts_edge'] = kg_prob - (100 / btts_odds)
+            result['btts_edge'] = model_btts_prob - (100 / btts_odds)
             result['btts_play'] = result['btts_edge'] >= VALUE_EDGE_THRESHOLD
         else:
             result['btts_edge'] = None
@@ -319,16 +340,30 @@ class PredictionEngine:
         sql = """
             INSERT INTO predictions 
             (event_id, prediction_date, match_date, home_team, away_team, category_id,
-             model_over_prob, model_btts_prob, odds_over, odds_btts, edge_over, edge_btts,
-             play_over, play_btts, form_score, pressure_score, h2h_score, early_bonus,
+             model_over_prob, model_over15_prob, model_btts_prob,
+             odds_over, odds_over15, odds_btts,
+             edge_over, edge_over15, edge_btts,
+             play_over, play_over15, play_btts,
+             form_score, pressure_score, h2h_score, early_bonus,
              second_bonus, referee_penalty, net_total_score)
-            VALUES (%s, CURDATE(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, CURDATE(), %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
             model_over_prob = VALUES(model_over_prob),
+            model_over15_prob = VALUES(model_over15_prob),
             model_btts_prob = VALUES(model_btts_prob),
+            odds_over = VALUES(odds_over),
+            odds_over15 = VALUES(odds_over15),
+            odds_btts = VALUES(odds_btts),
             edge_over = VALUES(edge_over),
+            edge_over15 = VALUES(edge_over15),
             edge_btts = VALUES(edge_btts),
             play_over = VALUES(play_over),
+            play_over15 = VALUES(play_over15),
             play_btts = VALUES(play_btts),
             form_score = VALUES(form_score),
             pressure_score = VALUES(pressure_score),
@@ -341,8 +376,10 @@ class PredictionEngine:
         """
         self.cursor.execute(sql, (
             event_id, pred['date'], pred['home_team'], pred['away_team'], pred['category_id'],
-            pred['model_over_prob'], pred['model_btts_prob'], pred['over_odds'], pred['btts_odds'],
-            pred['over_edge'], pred['btts_edge'], pred['over_play'], pred['btts_play'],
+            pred['model_over_prob'], pred['model_over15_prob'], pred['model_btts_prob'],
+            pred['over_odds'], pred['over15_odds'], pred['btts_odds'],
+            pred['over_edge'], pred['over15_edge'], pred['btts_edge'],
+            pred['over_play'], pred['over15_play'], pred['btts_play'],
             pred['form_score'], pred['pressure_score'], pred['h2h_score'], pred['early_bonus'],
             pred['second_bonus'], pred['referee_penalty'], pred['net_total']
         ))
@@ -354,7 +391,8 @@ class PredictionEngine:
         tomorrow = today + dt.timedelta(days=1)
         ids_str = ','.join(map(str, MAJOR_TOURNAMENT_IDS))
         query = f"""
-            SELECT event_id, start_utc, home_team, away_team, odds_o25, odds_btts_yes, category_id
+            SELECT event_id, start_utc, home_team, away_team,
+                   odds_o25, odds_o15, odds_btts_yes, category_id
             FROM results_football
             WHERE status IN ('notstarted', 'scheduled')
                 AND start_utc IN (%s, %s)
@@ -377,9 +415,11 @@ class PredictionEngine:
 
             print("=" * 50)
             print(f"🏆 {pred['home_team']} vs {pred['away_team']} (Lig ID: {pred['category_id']}) - {pred['date']}")
-            print(f"📊 2.5 Üst: %{pred['model_over_prob']:.1f} | KG Var: %{pred['model_btts_prob']:.1f}")
+            print(f"📊 2.5 Üst: %{pred['model_over_prob']:.1f} | 1.5 Üst: %{pred['model_over15_prob']:.1f} | KG Var: %{pred['model_btts_prob']:.1f}")
             if pred['over_odds']:
                 print(f"💰 Over 2.5: Oran {pred['over_odds']:.2f} -> Edge %{pred['over_edge']:.1f} -> {'OYNA' if pred['over_play'] else 'OYNAMA'}")
+            if pred['over15_odds']:
+                print(f"💰 Over 1.5: Oran {pred['over15_odds']:.2f} -> Edge %{pred['over15_edge']:.1f} -> {'OYNA' if pred['over15_play'] else 'OYNAMA'}")
             if pred['btts_odds']:
                 print(f"💰 KG Var: Oran {pred['btts_odds']:.2f} -> Edge %{pred['btts_edge']:.1f} -> {'OYNA' if pred['btts_play'] else 'OYNAMA'}")
             print(f"📈 Puanlar: Form={pred['form_score']:.1f}, Baskı={pred['pressure_score']:.1f}, H2H={pred['h2h_score']:.1f}, Erken={pred['early_bonus']}, İkinciYarı={pred['second_bonus']}, Hakem={pred['referee_penalty']} -> Toplam {pred['net_total']:.1f}/110")
