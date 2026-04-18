@@ -213,7 +213,7 @@ class PredictionEngine:
         away_fh = away_cache['last_10_avg_first_half_goals']
         if home_fh > league_avg_first_half_goals and away_fh > league_avg_first_half_goals:
             return 5
-        elif (home_fh + away_fh) / 2.0 > league_avg_first_half_goals * 1.5:
+        elif (home_fh + away_fh) / 2.0 > league_avg_first_half_goals * 1.2:
             return 3
         return 0
 
