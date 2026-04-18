@@ -25,12 +25,13 @@ MAJOR_TOURNAMENT_IDS = {
     1, 2, 3, 72, 84, 36, 37, 3739, 33, 34, 7372, 42, 41, 8343, 810,
     4, 5397, 62, 101, 39, 40, 38, 692, 280, 127, 83, 1449,
     169352, 5071, 28, 6720, 18, 3397, 3708, 82, 3034, 3284, 6230,
-    54, 64, 29, 1060, 219, 652, 144, 1339, 1340, 1341, 5, 6, 12, 13, 19, 24, 27, 30, 31, 48, 49, 50, 52, 53, 55, 79, 102, 232, 384, 
-    681, 877, 1061, 1107, 1427, 10812, 16753, 19232, 34363, 51702, 52653, 58560, 
+    54, 64, 29, 1060, 219, 652, 144, 1339, 1340, 1341, 5, 6, 12, 13, 19, 24, 27, 30, 31, 48, 49, 50, 52, 53, 55, 79, 102, 232, 384,
+    681, 877, 1061, 1107, 1427, 10812, 16753, 19232, 34363, 51702, 52653, 58560,
     64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
 }
 
 VALUE_EDGE_THRESHOLD = 0   # 0 = value kontrolü yok
+
 
 class PredictionEngine:
     def __init__(self):
@@ -208,15 +209,15 @@ class PredictionEngine:
         raw = ((h2h_btts * norm_btts + h2h_over25 * norm_over) / 2.0) * 15
         return min(15.0, raw)
 
-def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_goals):
-        # Takımların son 10 maçta İY attıkları gollerin ortalaması 
+    def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_goals):
+        # Takımların son 10 maçta İY attıkları gollerin ortalaması
         home_fh = home_cache['last_10_avg_first_half_goals']
         away_fh = away_cache['last_10_avg_first_half_goals']
-        
+
         # Takımların toplam İY gol beklentisi (Maç potansiyeli)
-        combined_fh = home_fh + away_fh 
-        
-        # Kıyaslamayı ligin toplam İY gol ortalamasına göre yapıyoruz 
+        combined_fh = home_fh + away_fh
+
+        # Kıyaslamayı ligin toplam İY gol ortalamasına göre yapıyoruz
         if combined_fh > league_avg_first_half_goals * 1.2:
             return 5
         elif combined_fh > league_avg_first_half_goals:
@@ -224,30 +225,30 @@ def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_go
         return 0
 
     def calculate_second_half_bonus(self, home_cache, away_cache, league_zero_zero_comeback):
-        # Takımların İY 0-0 biten maçlarda KG Var yapma oranları 
+        # Takımların İY 0-0 biten maçlarda KG Var yapma oranları
         home_zz = home_cache.get('zero_zero_comeback_ratio', 0)
         away_zz = away_cache.get('zero_zero_comeback_ratio', 0)
-        
+
         # Ortalama reaksiyon (geri dönüş) oranı
         avg_zz = (home_zz + away_zz) / 2.0
-        
-        # Eğer veri varsa (0'dan büyükse) ligin geri dönüş ortalamasıyla kıyasla 
+
+        # Eğer veri varsa (0'dan büyükse) ligin geri dönüş ortalamasıyla kıyasla
         if avg_zz > 0:
             if avg_zz > league_zero_zero_comeback * 1.2:
                 return 5
             elif avg_zz > league_zero_zero_comeback:
                 return 2
-        
-        # Veri yoksa, takımların genel KG Var (BTTS) eğilimlerine bak 
+
+        # Veri yoksa, takımların genel KG Var (BTTS) eğilimlerine bak
         else:
             home_btts = home_cache['last_10_btts_ratio']
             away_btts = away_cache['last_10_btts_ratio']
             avg_btts = (home_btts + away_btts) / 2.0
-            
-            # KG Var (BTTS) oranı %55'ten yüksekse 3 puan bonus ver 
-            if avg_btts > 0.55: 
+
+            # KG Var (BTTS) oranı %55'ten yüksekse 3 puan bonus ver
+            if avg_btts > 0.55:
                 return 3
-        
+
         return 0
 
     def predict_match(self, match):
@@ -385,6 +386,7 @@ def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_go
 
         print(f"\n✅ {len(matches)} maçın tahmini predictions tablosuna kaydedildi.")
         self.close()
+
 
 if __name__ == "__main__":
     engine = PredictionEngine()
