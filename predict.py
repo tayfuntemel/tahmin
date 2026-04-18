@@ -209,13 +209,18 @@ class PredictionEngine:
         return min(15.0, raw)
 
     def calculate_early_bonus(self, home_cache, away_cache, league_avg_first_half_goals):
-        home_fh = home_cache['last_10_avg_first_half_goals']
-        away_fh = away_cache['last_10_avg_first_half_goals']
-        if home_fh > league_avg_first_half_goals and away_fh > league_avg_first_half_goals:
-            return 5
-        elif (home_fh + away_fh) / 2.0 > league_avg_first_half_goals * 1.2:
-            return 3
-        return 0
+    home_fh = home_cache['last_10_avg_first_half_goals']
+    away_fh = away_cache['last_10_avg_first_half_goals']
+    
+    # Takımların toplam İY gol beklentisi
+    combined_fh = home_fh + away_fh 
+    
+    # Kıyaslamayı lig ortalamasına (toplam gol) göre yapıyoruz
+    if combined_fh > league_avg_first_half_goals * 1.2:
+        return 5
+    elif combined_fh > league_avg_first_half_goals:
+        return 3
+    return 0
 
     def calculate_second_half_bonus(self, home_cache, away_cache, league_zero_zero_comeback):
         home_zz = home_cache['zero_zero_comeback_ratio']
