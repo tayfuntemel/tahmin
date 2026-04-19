@@ -4,9 +4,6 @@
 Tahmin scripti - cache tablolarını (league_stats, team_form_cache, referee_stats) kullanır.
 Master prompt'taki tüm kurallar uygulanır.
 1.5 Üst marketi de eklenmiştir.
-
-TARİH KISITLAMASI: PREDICT_FROM_DATE değişkeni ile belirtilen tarih ve bir sonraki gün
-için tahmin yapılır. None ise bugün ve yarın kullanılır.
 """
 
 import os
@@ -35,12 +32,6 @@ MAJOR_TOURNAMENT_IDS = {
 
 VALUE_EDGE_THRESHOLD = 0   # 0 = value kontrolü yok
 
-# ========== KONFİGÜRASYON ==========
-# Tahmin yapılacak başlangıç tarihi (bu tarih ve bir sonraki gün için tahmin yapılır).
-# Örnek: "2026-04-20" -> 20 Nisan 2026 ve 21 Nisan 2026 maçları.
-# None verilirse bugün ve yarın kullanılır.
-PREDICT_FROM_DATE = "2026-04-18"   # <-- İhtiyacına göre değiştir
-# ===================================
 
 class PredictionEngine:
     def __init__(self):
@@ -290,6 +281,8 @@ class PredictionEngine:
         model_btts_prob = model_over25_prob * 0.95
 
         # 1.5 Üst olasılığı: model_over25_prob'dan daha yüksek olmalı.
+        # Basit bir dönüşüm: 1.5 Üst olasılığı = 2.5 Üst olasılığı + (100 - 2.5 Üst olasılığı) * 0.3
+        # Bu, 2.5 Üst %60 ise 1.5 Üst ~%72 gibi bir değer verir.
         model_over15_prob = model_over25_prob + (100 - model_over25_prob) * 0.3
         model_over15_prob = min(99.0, model_over15_prob)
 
@@ -394,34 +387,21 @@ class PredictionEngine:
     def run(self):
         self.connect()
         tz_tr = dt.timezone(dt.timedelta(hours=3))
-
-        # Tahmin yapılacak tarih aralığını belirle
-        if PREDICT_FROM_DATE:
-            pred_start = dt.datetime.strptime(PREDICT_FROM_DATE, "%Y-%m-%d").date()
-            pred_end = pred_start + dt.timedelta(days=1)
-            date1 = pred_start
-            date2 = pred_end
-            print(f"🔮 Tahmin aralığı: {date1} ve {date2} (konfigürasyondan)")
-        else:
-            today = dt.datetime.now(tz_tr).date()
-            tomorrow = today + dt.timedelta(days=1)
-            date1 = today
-            date2 = tomorrow
-            print(f"🔮 Tahmin aralığı: bugün ({today}) ve yarın ({tomorrow})")
-
+        today = dt.datetime.now(tz_tr).date()
+        tomorrow = today + dt.timedelta(days=1)
         ids_str = ','.join(map(str, MAJOR_TOURNAMENT_IDS))
         query = f"""
             SELECT event_id, start_utc, home_team, away_team,
                    odds_o25, odds_o15, odds_btts_yes, category_id
             FROM results_football
-            WHERE status IN ('finished', 'ended')
+            WHERE status IN ('notstarted', 'scheduled')
                 AND start_utc IN (%s, %s)
                 AND (tournament_id IN ({ids_str}) OR category_id IN ({ids_str}))
         """
-        self.cursor.execute(query, (date1, date2))
+        self.cursor.execute(query, (today, tomorrow))
         matches = self.cursor.fetchall()
         if not matches:
-            print(f"{date1} veya {date2} oynanacak major turnuva maçı bulunamadı.")
+            print("Bugün veya yarın oynanacak major turnuva maçı bulunamadı.")
             self.close()
             return
 
