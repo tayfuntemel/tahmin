@@ -31,7 +31,7 @@ DB_CONFIG = {
 # İstatistiklerin hesaplanacağı son tarih (bu tarih dahil).
 # Örnek: "2026-04-19" -> 19 Nisan 2026 ve öncesi maçlar kullanılır.
 # None verilirse tüm maçlar kullanılır.
-STATS_UNTIL_DATE = "2026-04-11"   # <-- İhtiyacına göre değiştir
+STATS_UNTIL_DATE = "2026-04-13"   # <-- İhtiyacına göre değiştir
 # ===================================
 
 class StatsUpdater:
