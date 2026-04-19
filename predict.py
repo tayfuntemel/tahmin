@@ -39,7 +39,7 @@ VALUE_EDGE_THRESHOLD = 0   # 0 = value kontrolü yok
 # Tahmin yapılacak başlangıç tarihi (bu tarih ve bir sonraki gün için tahmin yapılır).
 # Örnek: "2026-04-20" -> 20 Nisan 2026 ve 21 Nisan 2026 maçları.
 # None verilirse bugün ve yarın kullanılır.
-PREDICT_FROM_DATE = "2026-04-08"   # <-- İhtiyacına göre değiştir
+PREDICT_FROM_DATE = "2026-04-10"   # <-- İhtiyacına göre değiştir
 # ===================================
 
 class PredictionEngine:
