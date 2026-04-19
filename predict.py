@@ -414,7 +414,7 @@ class PredictionEngine:
             SELECT event_id, start_utc, home_team, away_team,
                    odds_o25, odds_o15, odds_btts_yes, category_id
             FROM results_football
-            WHERE status IN ('notstarted', 'scheduled')
+            WHERE status IN ('finished', 'ended')
                 AND start_utc IN (%s, %s)
                 AND (tournament_id IN ({ids_str}) OR category_id IN ({ids_str}))
         """
