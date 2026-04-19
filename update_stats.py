@@ -7,8 +7,6 @@ Master prompt'taki tüm kurallara uygun şekilde:
 - Son 5 iç saha / dış saha gol
 - Son 3 maç hücum verileri (toplam şut, isabetli şut, korner, topla oynama)
 - Kesici kural için son maç isabetli şut
-
-TARİH KISITLAMASI: STATS_UNTIL_DATE değişkeni ile belirtilen tarihe kadar olan maçlar kullanılır.
 """
 
 import os
@@ -27,20 +25,10 @@ DB_CONFIG = {
     "collation": "utf8mb4_unicode_ci"
 }
 
-# ========== KONFİGÜRASYON ==========
-# İstatistiklerin hesaplanacağı son tarih (bu tarih dahil).
-# Örnek: "2026-04-19" -> 19 Nisan 2026 ve öncesi maçlar kullanılır.
-# None verilirse tüm maçlar kullanılır.
-STATS_UNTIL_DATE = "2026-04-17"   # <-- İhtiyacına göre değiştir
-# ===================================
-
 class StatsUpdater:
     def __init__(self):
         self.conn = None
         self.cursor = None
-        self.cutoff_date = None
-        if STATS_UNTIL_DATE:
-            self.cutoff_date = dt.datetime.strptime(STATS_UNTIL_DATE, "%Y-%m-%d").date()
 
     def connect(self):
         self.conn = mysql.connector.connect(**DB_CONFIG)
@@ -110,25 +98,8 @@ class StatsUpdater:
         if self.conn:
             self.conn.close()
 
-    def _apply_cutoff_filter(self, query, params):
-        """Eğer cutoff_date varsa sorguya start_utc <= cutoff_date koşulunu ekler."""
-        if self.cutoff_date:
-            # WHERE varsa AND ekle, yoksa WHERE ekle
-            if "WHERE" in query.upper():
-                query += " AND start_utc <= %s"
-            else:
-                # Sorguda WHERE yoksa, FROM ... tablo kısmından sonra ekle
-                # Basitçe tablo isminden sonra "WHERE start_utc <= %s" eklemek riskli.
-                # Daha güvenli: sorgunun sonuna " AND start_utc <= %s" ekleyelim ama WHERE yoksa hata verir.
-                # Burada tüm sorguların zaten WHERE içerdiğini varsayıyoruz.
-                # Eğer bir sorguda WHERE yoksa manuel düzeltme gerekir. Şimdilik uyarı bas.
-                print("[UYARI] Sorguda WHERE yok, cutoff uygulanamadı:", query[:100])
-                return query, params
-            params = list(params) + [self.cutoff_date]
-        return query, params
-
     def update_league_stats(self):
-        """Lig bazlı ortalamalar (tüm bitmiş maçlar, cutoff tarihine kadar)"""
+        """Lig bazlı ortalamalar (tüm bitmiş maçlar)"""
         query = """
             SELECT 
                 category_id,
@@ -146,14 +117,9 @@ class StatsUpdater:
             FROM results_football
             WHERE status IN ('finished', 'ended')
                 AND category_id IS NOT NULL
+            GROUP BY category_id
         """
-        params = []
-        if self.cutoff_date:
-            query += " AND start_utc <= %s"
-            params.append(self.cutoff_date)
-        query += " GROUP BY category_id"
-
-        self.cursor.execute(query, params)
+        self.cursor.execute(query)
         rows = self.cursor.fetchall()
         today = dt.date.today()
         for row in rows:
@@ -186,10 +152,10 @@ class StatsUpdater:
                 float(row['zero_zero_comeback_ratio']) if row['zero_zero_comeback_ratio'] is not None else 0,
                 row['match_count'], today
             ))
-        print(f"[league_stats] {len(rows)} lig güncellendi (cutoff: {self.cutoff_date}).")
+        print(f"[league_stats] {len(rows)} lig güncellendi.")
 
     def update_team_form_cache(self):
-        """Her takım için master prompt'taki tüm form ve hücum verileri (cutoff tarihine kadar)"""
+        """Her takım için master prompt'taki tüm form ve hücum verileri"""
         # Tüm benzersiz (team_name, category_id) kombinasyonlarını al
         self.cursor.execute("""
             SELECT DISTINCT home_team as team_name, category_id FROM results_football WHERE home_team IS NOT NULL
@@ -205,21 +171,18 @@ class StatsUpdater:
             cat_id = row['category_id']
             team_key = f"{team_name}|{cat_id}"
 
-            # Son 10 maç (ev+deplasman) - en güncel tarih sırası, cutoff'a dikkat
+            # Son 10 maç (ev+deplasman) - en güncel tarih sırası
             query_10 = """
                 SELECT ft_home, ft_away, shot_on_h, shot_on_a, shot_h, shot_a, corn_h, corn_a, 
-                       poss_h, poss_a, ht_home, ht_away, home_team, start_utc
+                       poss_h, poss_a, ht_home, ht_away, home_team
                 FROM results_football
                 WHERE status IN ('finished', 'ended')
                     AND (home_team = %s OR away_team = %s)
                     AND category_id = %s
+                ORDER BY start_utc DESC, start_time_utc DESC
+                LIMIT 10
             """
-            params = [team_name, team_name, cat_id]
-            if self.cutoff_date:
-                query_10 += " AND start_utc <= %s"
-                params.append(self.cutoff_date)
-            query_10 += " ORDER BY start_utc DESC, start_time_utc DESC LIMIT 10"
-            self.cursor.execute(query_10, params)
+            self.cursor.execute(query_10, (team_name, team_name, cat_id))
             matches = self.cursor.fetchall()
             if len(matches) < 3:
                 continue  # yetersiz veri
@@ -278,37 +241,27 @@ class StatsUpdater:
             btts_ratio_10 = btts_count / len(matches)
             zero_zero_comeback_ratio = (zero_zero_comeback / zero_zero_count) if zero_zero_count > 0 else 0.0
 
-            # Son 5 iç saha (cutoff)
-            query_home = """
+            # Son 5 iç saha
+            self.cursor.execute("""
                 SELECT COALESCE(ft_home,0) as ft_home FROM results_football
                 WHERE status IN ('finished', 'ended') AND home_team = %s AND category_id = %s
-            """
-            params_home = [team_name, cat_id]
-            if self.cutoff_date:
-                query_home += " AND start_utc <= %s"
-                params_home.append(self.cutoff_date)
-            query_home += " ORDER BY start_utc DESC LIMIT 5"
-            self.cursor.execute(query_home, params_home)
+                ORDER BY start_utc DESC LIMIT 5
+            """, (team_name, cat_id))
             home_matches = self.cursor.fetchall()
             home_goals = [m['ft_home'] for m in home_matches]
             home_avg = sum(home_goals) / len(home_goals) if home_goals else 0
 
-            # Son 5 dış saha (cutoff)
-            query_away = """
+            # Son 5 dış saha
+            self.cursor.execute("""
                 SELECT COALESCE(ft_away,0) as ft_away FROM results_football
                 WHERE status IN ('finished', 'ended') AND away_team = %s AND category_id = %s
-            """
-            params_away = [team_name, cat_id]
-            if self.cutoff_date:
-                query_away += " AND start_utc <= %s"
-                params_away.append(self.cutoff_date)
-            query_away += " ORDER BY start_utc DESC LIMIT 5"
-            self.cursor.execute(query_away, params_away)
+                ORDER BY start_utc DESC LIMIT 5
+            """, (team_name, cat_id))
             away_matches = self.cursor.fetchall()
             away_goals = [m['ft_away'] for m in away_matches]
             away_avg = sum(away_goals) / len(away_goals) if away_goals else 0
 
-            # Son 3 maç (hücum baskısı için) - aynı matches listesinin ilk 3'ü (zaten cutoff uygulanmış)
+            # Son 3 maç (hücum baskısı için)
             last3 = matches[:3]
             last3_shot_on = []
             last3_total_shots = []
@@ -371,11 +324,11 @@ class StatsUpdater:
             ))
             count += 1
 
-        print(f"[team_form_cache] {count} takım güncellendi (cutoff: {self.cutoff_date}).")
+        print(f"[team_form_cache] {count} takım güncellendi.")
 
     def update_team_dna(self):
-        """Takım DNA'sı (tüm geçmiş ortalamalar) – isteğe bağlı, cutoff tarihine kadar."""
-        query_home = """
+        """Takım DNA'sı (tüm geçmiş ortalamalar) – isteğe bağlı, ama kullanılmıyorsa bu fonksiyonu çalıştırmayabilirsin."""
+        self.cursor.execute("""
             SELECT 
                 CONCAT(home_team, '|', category_id) as team_key,
                 AVG(COALESCE(ft_home,0)) as avg_goals,
@@ -384,16 +337,10 @@ class StatsUpdater:
                 COUNT(*) as total_matches
             FROM results_football
             WHERE status IN ('finished', 'ended')
-        """
-        params = []
-        if self.cutoff_date:
-            query_home += " AND start_utc <= %s"
-            params.append(self.cutoff_date)
-        query_home += " GROUP BY home_team, category_id"
-        self.cursor.execute(query_home, params)
+            GROUP BY home_team, category_id
+        """)
         home_stats = {row['team_key']: row for row in self.cursor.fetchall()}
-
-        query_away = """
+        self.cursor.execute("""
             SELECT 
                 CONCAT(away_team, '|', category_id) as team_key,
                 AVG(COALESCE(ft_away,0)) as avg_goals,
@@ -402,13 +349,8 @@ class StatsUpdater:
                 COUNT(*) as total_matches
             FROM results_football
             WHERE status IN ('finished', 'ended')
-        """
-        params_away = []
-        if self.cutoff_date:
-            query_away += " AND start_utc <= %s"
-            params_away.append(self.cutoff_date)
-        query_away += " GROUP BY away_team, category_id"
-        self.cursor.execute(query_away, params_away)
+            GROUP BY away_team, category_id
+        """)
         for row in self.cursor.fetchall():
             key = row['team_key']
             if key in home_stats:
@@ -430,21 +372,17 @@ class StatsUpdater:
                 total_matches = VALUES(total_matches),
                 last_updated = VALUES(last_updated)
             """, (key, stats['avg_goals'], stats['avg_shot_on'], stats['avg_corners'], stats['total_matches'], today))
-        print(f"[team_dna] {len(home_stats)} takım güncellendi (cutoff: {self.cutoff_date}).")
+        print(f"[team_dna] {len(home_stats)} takım güncellendi.")
 
     def update_referee_stats(self):
-        """Hakem bazlı ortalama gol (cutoff tarihine kadar)"""
+        """Hakem bazlı ortalama gol"""
         query = """
             SELECT referee, AVG(COALESCE(ft_home,0) + COALESCE(ft_away,0)) as avg_goals, COUNT(*) as match_count
             FROM results_football
             WHERE status IN ('finished', 'ended') AND referee IS NOT NULL
+            GROUP BY referee
         """
-        params = []
-        if self.cutoff_date:
-            query += " AND start_utc <= %s"
-            params.append(self.cutoff_date)
-        query += " GROUP BY referee"
-        self.cursor.execute(query, params)
+        self.cursor.execute(query)
         rows = self.cursor.fetchall()
         today = dt.date.today()
         for row in rows:
@@ -457,7 +395,7 @@ class StatsUpdater:
                 last_updated = VALUES(last_updated)
             """
             self.cursor.execute(insert_sql, (row['referee'], float(row['avg_goals']), row['match_count'], today))
-        print(f"[referee_stats] {len(rows)} hakem güncellendi (cutoff: {self.cutoff_date}).")
+        print(f"[referee_stats] {len(rows)} hakem güncellendi.")
 
     def run(self):
         self.connect()
@@ -467,7 +405,6 @@ class StatsUpdater:
         self.update_referee_stats()
         self.close()
         print("Tüm istatistik tabloları güncellendi.")
-
 
 if __name__ == "__main__":
     updater = StatsUpdater()
