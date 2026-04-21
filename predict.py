@@ -353,6 +353,7 @@ class PredictionEngine:
                     %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+            match_date = VALUES(match_date),
             model_over_prob = VALUES(model_over_prob),
             model_over15_prob = VALUES(model_over15_prob),
             model_btts_prob = VALUES(model_btts_prob),
