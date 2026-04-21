@@ -2,7 +2,7 @@ name: Daily Stats & Predictions
 
 on:
   schedule:
-    - cron: '21 40 * * *'   # UTC 05:05 -> Türkiye 08:05
+    - cron: '5 5 * * *'   # UTC 05:05 -> Türkiye 08:05
   workflow_dispatch:
 
 jobs:
