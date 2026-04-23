@@ -155,6 +155,15 @@ class Scraper:
             data_text = self.page.evaluate("() => document.body.innerText")
             return json.loads(data_text)
         except Exception as e:
+            # Hata durumunda sessiz kalmak yerine hatayı logluyoruz
+            print(f"\n[API HATASI] URL: {url}")
+            print(f"[API HATASI] Detay: {e}")
+            try:
+                # Sayfa JSON değilse muhtemelen HTML (Bot engeli) dönmüştür, bunu yazdıralım
+                html_icerik = self.page.evaluate("() => document.body.innerHTML")
+                print(f"[API YANITI GÖRÜNÜMÜ] (İlk 300 Karakter): {html_icerik[:300]}\n")
+            except:
+                pass
             return {}
 
     def get_odds(self, event_id) -> Dict[str, Any]:
@@ -314,6 +323,10 @@ def main():
                 date_str = fetch_date.strftime("%Y-%m-%d")
                 events = sc.by_date(date_str)
                 
+                # --- HATA AYIKLAMA (DEBUG) İÇİN EKLENEN SATIR ---
+                print(f"[DEBUG] {date_str} tarihi için API'den {len(events)} adet HAM etkinlik verisi geldi.") 
+                # -----------------------------------------------
+
                 p_count = 0
                 for ev in events:
                     # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
