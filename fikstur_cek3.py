@@ -4,6 +4,8 @@ import datetime as dt, time, json, sys
 import mysql.connector
 from typing import Dict, Any, List
 from playwright.sync_api import sync_playwright
+# YENİ EKLENDİ: Hayalet Modu Kütüphanesi
+from playwright_stealth import stealth_sync
 
 CONFIG = {
     "db": {
@@ -15,16 +17,10 @@ CONFIG = {
     },
     "api": {
         "base_url": "https://api.sofascore.com/api/v1",
-        "headers": {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.sofascore.com/",
-            "Origin": "https://www.sofascore.com"
-        },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "scraper": {
-        "sleep_between_requests": 1.5  # Sunucuda ban yememek için süreyi biraz daha güvenli tuttuk
+        "sleep_between_requests": 2.0  # Güvenlik için süreyi biraz daha uzattık
     }
 }
 
@@ -137,18 +133,24 @@ class Scraper:
 
     def start(self):
         self.p = sync_playwright().start()
-        # GitHub Actions (Ubuntu) için zorunlu parametreler eklendi
         self.browser = self.p.chromium.launch(
             headless=True, 
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
         )
-        ctx = self.browser.new_context(user_agent=self.api["user_agent"], extra_http_headers=self.api["headers"])
+        
+        # Ekran boyutu vererek daha gerçekçi görünüyoruz
+        ctx = self.browser.new_context(
+            user_agent=self.api["user_agent"],
+            viewport={"width": 1920, "height": 1080}
+        )
         self.page = ctx.new_page()
         
-        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor, güvenlik çerezleri alınıyor...")
-        # Önce ana sayfaya gidip sitenin bizi "gerçek kullanıcı" olarak tanımasını sağlıyoruz.
+        # YENİ EKLENDİ: Hayalet modunu bu sayfaya uyguluyoruz
+        stealth_sync(self.page)
+        
+        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor, hayalet mod devrede...")
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
-        time.sleep(5) # Çerezlerin ve arka plan scriptlerinin tam oturması için 5 saniye bekliyoruz
+        time.sleep(6) # Çerezlerin oturması için bekle
 
     def stop(self):
         if self.browser: self.browser.close()
@@ -156,29 +158,26 @@ class Scraper:
 
     def _fetch_json(self, url: str) -> dict:
         try:
-            time.sleep(self.api.get("sleep_between_requests", 1.5))
+            time.sleep(self.api.get("sleep_between_requests", 2.0))
             
-            # API'ye doğrudan sayfa açarak gitmek yerine, ana sayfa üzerinden JS Fetch isteği atıyoruz.
-            # Bu sayede Cloudflare (403 Forbidden) engellerini aşıyoruz.
-            data = self.page.evaluate('''async (req_url) => {
-                try {
-                    const res = await fetch(req_url);
-                    if (!res.ok) {
-                        return { "error": { "code": res.status, "reason": res.statusText } };
-                    }
-                    return await res.json();
-                } catch (e) {
-                    return { "error": "Fetch_Exception", "details": e.toString() };
-                }
-            }''', url)
-
+            # YENİ: Playwright'ın kendi request sistemini kullanıyoruz. Çerezleri otomatik kopyalar.
+            response = self.page.context.request.get(url, headers={
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://www.sofascore.com/"
+            })
+            
             url_son_kisim = url.split('/')[-1]
-            print(f"\n[API RAW YANIT] {url_son_kisim} -> {str(data)[:300]}...")
             
-            return data
+            # Eğer 200 OK dönmezse engellenmişiz demektir
+            if response.status != 200:
+                print(f"\n[API HTTP {response.status}] {url_son_kisim} -> {response.text()[:200]}...")
+                return {}
+
+            print(f"\n[API BAŞARILI] {url_son_kisim} -> Veri başarıyla çekildi (200 OK)")
+            return response.json()
+            
         except Exception as e:
-            print(f"\n[API HATASI] URL: {url}")
-            print(f"[API HATASI] Detay: {e}")
+            print(f"\n[API HATASI] URL: {url} | Detay: {e}")
             return {}
 
     def get_odds(self, event_id) -> Dict[str, Any]:
@@ -276,7 +275,11 @@ class Scraper:
         data = self._fetch_json(url)
         
         if "events" not in data:
-            print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
+            if not data: # Zaten hata basılmışsa tekrar uyarıya gerek yok
+                pass
+            else:
+                print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
+            return []
             
         return data.get("events", [])
 
