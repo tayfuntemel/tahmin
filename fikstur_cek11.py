@@ -4,7 +4,6 @@ import datetime as dt, time, json, sys
 import mysql.connector
 from typing import Dict, Any, List
 from playwright.sync_api import sync_playwright
-# YENİ EKLENDİ: Hayalet Modu Kütüphanesi
 from playwright_stealth import stealth_sync
 
 CONFIG = {
@@ -20,7 +19,7 @@ CONFIG = {
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "scraper": {
-        "sleep_between_requests": 2.0  # Güvenlik için süreyi biraz daha uzattık
+        "sleep_between_requests": 2.5  # Çok hızlı gidip ban yemeyelim
     }
 }
 
@@ -92,7 +91,6 @@ class DB:
         self.cur.execute(SCHEMA_CREATE_TABLE)
         try:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
-            print("[DB] 'match_year' ve 'match_week' sütunları hazır.")
         except mysql.connector.Error:
             pass
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
@@ -138,44 +136,42 @@ class Scraper:
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
         )
         
-        # Ekran boyutu vererek daha gerçekçi görünüyoruz
         ctx = self.browser.new_context(
             user_agent=self.api["user_agent"],
             viewport={"width": 1920, "height": 1080}
         )
         self.page = ctx.new_page()
-        
-        # YENİ EKLENDİ: Hayalet modunu bu sayfaya uyguluyoruz
         stealth_sync(self.page)
         
-        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor, hayalet mod devrede...")
+        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor...")
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
-        time.sleep(6) # Çerezlerin oturması için bekle
-
-    def stop(self):
-        if self.browser: self.browser.close()
-        if self.p: self.p.stop()
+        time.sleep(5)
 
     def _fetch_json(self, url: str) -> dict:
         try:
-            time.sleep(self.api.get("sleep_between_requests", 2.0))
+            time.sleep(self.api.get("sleep_between_requests", 2.5))
             
-            # YENİ: Playwright'ın kendi request sistemini kullanıyoruz. Çerezleri otomatik kopyalar.
-            response = self.page.context.request.get(url, headers={
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://www.sofascore.com/"
-            })
+            # KRİTİK DEĞİŞİKLİK: Arka plandan değil, adres çubuğuna yazarak doğrudan API'ye gidiyoruz!
+            self.page.goto(url, wait_until="domcontentloaded")
+            time.sleep(2) # Sayfanın ekrana metni basmasını bekle
             
+            # Sayfadaki tüm yazıları (JSON) çekiyoruz
+            data_text = self.page.evaluate("() => document.body.innerText")
             url_son_kisim = url.split('/')[-1]
             
-            # Eğer 200 OK dönmezse engellenmişiz demektir
-            if response.status != 200:
-                print(f"\n[API HTTP {response.status}] {url_son_kisim} -> {response.text()[:200]}...")
+            try:
+                data = json.loads(data_text)
+                # Eğer Sofascore IP'yi kesin engellediyse:
+                if "error" in data:
+                    print(f"\n[IP KESİN ENGELİ] {url_son_kisim} -> {data['error']}. Sofascore GitHub IP'sini kara listeye almış!")
+                    return {}
+                
+                print(f"\n[API BAŞARILI] {url_son_kisim} -> Veri çekildi!")
+                return data
+            except json.JSONDecodeError:
+                print(f"\n[HTML DÖNDÜ / JSON DEĞİL] {url_son_kisim} -> {data_text[:100]}...")
                 return {}
-
-            print(f"\n[API BAŞARILI] {url_son_kisim} -> Veri başarıyla çekildi (200 OK)")
-            return response.json()
-            
+                
         except Exception as e:
             print(f"\n[API HATASI] URL: {url} | Detay: {e}")
             return {}
@@ -275,9 +271,7 @@ class Scraper:
         data = self._fetch_json(url)
         
         if "events" not in data:
-            if not data: # Zaten hata basılmışsa tekrar uyarıya gerek yok
-                pass
-            else:
+            if data: 
                 print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
             return []
             
