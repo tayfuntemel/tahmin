@@ -19,7 +19,7 @@ CONFIG = {
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "scraper": {
-        "sleep_between_requests": 2.5  # Çok hızlı gidip ban yemeyelim
+        "sleep_between_requests": 2.5 
     }
 }
 
@@ -147,21 +147,23 @@ class Scraper:
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
         time.sleep(5)
 
+    # BENİ UNUTMUŞTUN :) İŞTE BURADAYIM!
+    def stop(self):
+        if self.browser: self.browser.close()
+        if self.p: self.p.stop()
+
     def _fetch_json(self, url: str) -> dict:
         try:
             time.sleep(self.api.get("sleep_between_requests", 2.5))
             
-            # KRİTİK DEĞİŞİKLİK: Arka plandan değil, adres çubuğuna yazarak doğrudan API'ye gidiyoruz!
             self.page.goto(url, wait_until="domcontentloaded")
-            time.sleep(2) # Sayfanın ekrana metni basmasını bekle
+            time.sleep(2) 
             
-            # Sayfadaki tüm yazıları (JSON) çekiyoruz
             data_text = self.page.evaluate("() => document.body.innerText")
             url_son_kisim = url.split('/')[-1]
             
             try:
                 data = json.loads(data_text)
-                # Eğer Sofascore IP'yi kesin engellediyse:
                 if "error" in data:
                     print(f"\n[IP KESİN ENGELİ] {url_son_kisim} -> {data['error']}. Sofascore GitHub IP'sini kara listeye almış!")
                     return {}
