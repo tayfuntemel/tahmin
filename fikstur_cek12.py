@@ -175,7 +175,7 @@ class Scraper:
         
         print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor...")
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
-        time.sleep(5)
+        time.sleep(20)
 
     def stop(self):
         if self.browser: self.browser.close()
