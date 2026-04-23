@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 import os
-import datetime as dt, time, json, sys
+import datetime as dt, time, json, sys, random
 import mysql.connector
 from typing import Dict, Any, List
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
+
+# --- WEBSHARE PROXY LİSTEMİZ ---
+PROXY_LIST = [
+    "31.59.20.176:6754:czvalxxh:kmi3cfupz0ld",
+    "198.23.239.134:6540:czvalxxh:kmi3cfupz0ld",
+    "45.38.107.97:6014:czvalxxh:kmi3cfupz0ld",
+    "107.172.163.27:6543:czvalxxh:kmi3cfupz0ld",
+    "198.105.121.200:6462:czvalxxh:kmi3cfupz0ld",
+    "216.10.27.159:6837:czvalxxh:kmi3cfupz0ld",
+    "142.111.67.146:5611:czvalxxh:kmi3cfupz0ld",
+    "191.96.254.138:6185:czvalxxh:kmi3cfupz0ld",
+    "31.58.9.4:6077:czvalxxh:kmi3cfupz0ld",
+    "104.239.107.47:5699:czvalxxh:kmi3cfupz0ld"
+]
 
 CONFIG = {
     "db": {
@@ -131,8 +145,24 @@ class Scraper:
 
     def start(self):
         self.p = sync_playwright().start()
+        
+        # --- PROXY SEÇİMİ VE AYARLANMASI ---
+        # 10 proxy arasından rastgele birini seçiyoruz
+        secilen_proxy = random.choice(PROXY_LIST)
+        ip, port, user, pw = secilen_proxy.split(":")
+        
+        proxy_ayarlari = {
+            "server": f"http://{ip}:{port}",
+            "username": user,
+            "password": pw
+        }
+        
+        print(f"[SİSTEM] Rastgele Proxy Seçildi: {ip}:{port} (Sofascore artık bu IP'yi görecek)")
+
+        # Tarayıcıyı proxy ile başlatıyoruz
         self.browser = self.p.chromium.launch(
             headless=True, 
+            proxy=proxy_ayarlari, # Proxy aktif!
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
         )
         
@@ -141,13 +171,12 @@ class Scraper:
             viewport={"width": 1920, "height": 1080}
         )
         self.page = ctx.new_page()
-        stealth_sync(self.page)
+        stealth_sync(self.page) # Hayalet mod aktif!
         
         print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor...")
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
         time.sleep(5)
 
-    # BENİ UNUTMUŞTUN :) İŞTE BURADAYIM!
     def stop(self):
         if self.browser: self.browser.close()
         if self.p: self.p.stop()
@@ -165,7 +194,7 @@ class Scraper:
             try:
                 data = json.loads(data_text)
                 if "error" in data:
-                    print(f"\n[IP KESİN ENGELİ] {url_son_kisim} -> {data['error']}. Sofascore GitHub IP'sini kara listeye almış!")
+                    print(f"\n[IP ENGELİ] {url_son_kisim} -> {data['error']}. (Proxy engellenmiş olabilir, sonraki denemede değişecek)")
                     return {}
                 
                 print(f"\n[API BAŞARILI] {url_son_kisim} -> Veri çekildi!")
@@ -385,7 +414,7 @@ def main():
         else:
             print(f"\n[UYARI] Bu denemede HİÇBİR maç verisi çekilemedi (Toplam 0 maç)!")
             if attempt < max_retries:
-                print("15 saniye bekleniyor, ardından tekrar denenecek...")
+                print("15 saniye bekleniyor, ardından yeni bir proxy ile tekrar denenecek...")
                 time.sleep(15)
             attempt += 1
 
