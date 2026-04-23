@@ -35,4 +35,4 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         # NOT: Çalıştırdığın dosyanın adı fikstur_cek3.py ise burayı da öyle yapmalısın.
-        run: python fikstur_cek11.py
+        run: python fikstur_cek12.py
