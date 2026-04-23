@@ -15,8 +15,13 @@ CONFIG = {
     },
     "api": {
         "base_url": "https://api.sofascore.com/api/v1",
-        "headers": {"Accept": "application/json, text/plain, */*"},
-        "user_agent": "Mozilla/5.0"
+        "headers": {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.sofascore.com/",
+            "Origin": "https://www.sofascore.com"
+        },
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "scraper": {
         "sleep_between_requests": 0.5 
@@ -89,18 +94,15 @@ class DB:
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
         
-        # Tabloyu oluştur (eğer yoksa)
+        # Tabloyu oluştur
         self.cur.execute(SCHEMA_CREATE_TABLE)
         
-        # Sütunlar yoksa tabloya ekle (Mevcut tabloyu günceller)
+        # Sütunlar yoksa tabloya ekle
         try:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
-            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi.")
+            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi veya zaten var.")
         except mysql.connector.Error as err:
-            # Hata kodu 1060 ise (Duplicate column name), sütun zaten var demektir, görmezden geliriz.
-            if err.errno != 1060:
-                print(f"[DB] Tablo güncellenirken uyarı: {err}")
-
+            pass
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
@@ -153,17 +155,16 @@ class Scraper:
             time.sleep(self.api.get("sleep_between_requests", 0.3))
             self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             data_text = self.page.evaluate("() => document.body.innerText")
+            
+            # --- YENİ EKLENDİ ---
+            # Sofascore bize ne gönderiyor görebilmek için ham veriyi yazdırıyoruz.
+            url_son_kisim = url.split('/')[-1]
+            print(f"\n[API RAW YANIT] {url_son_kisim} -> {data_text[:300]}...")
+            
             return json.loads(data_text)
         except Exception as e:
-            # Hata durumunda sessiz kalmak yerine hatayı logluyoruz
             print(f"\n[API HATASI] URL: {url}")
             print(f"[API HATASI] Detay: {e}")
-            try:
-                # Sayfa JSON değilse muhtemelen HTML (Bot engeli) dönmüştür, bunu yazdıralım
-                html_icerik = self.page.evaluate("() => document.body.innerHTML")
-                print(f"[API YANITI GÖRÜNÜMÜ] (İlk 300 Karakter): {html_icerik[:300]}\n")
-            except:
-                pass
             return {}
 
     def get_odds(self, event_id) -> Dict[str, Any]:
@@ -259,16 +260,18 @@ class Scraper:
     def by_date(self, date_str) -> List[Dict[str, Any]]:
         url = f"{self.api['base_url']}/sport/football/scheduled-events/{date_str}"
         data = self._fetch_json(url)
+        
+        # Eğer events anahtarı yoksa bunu da loga düşelim
+        if "events" not in data:
+            print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
+            
         return data.get("events", [])
 
     def parse(self, ev: Dict[str, Any], extra_data: Dict[str, Any]) -> Dict[str, Any]:
         ts = ev.get("startTimestamp")
-        
-        # TÜRKİYE SAATİNE ÇEVİRME (UTC+3)
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         dt_tr = dt.datetime.fromtimestamp(ts, tz_tr) if isinstance(ts, int) else None
         
-        # Yıl ve hafta hesaplaması
         match_year, match_week = None, None
         if dt_tr:
             match_year, match_week, _ = dt_tr.isocalendar()
@@ -296,13 +299,12 @@ class Scraper:
         return row
 
 def main():
-    max_retries = 3  # İşlem başarısız olursa maksimum deneme sayısı
+    max_retries = 3
     attempt = 1
     
     while attempt <= max_retries:
         print(f"\n--- ÇALIŞTIRMA DENEMESİ {attempt}/{max_retries} ---")
         
-        # Sınıfları döngü içinde başlatıyoruz ki her denemede temiz bir bağlantı kurulsun
         db = DB(CONFIG["db"])
         sc = Scraper(CONFIG["api"])
         total_processed_in_this_run = 0
@@ -311,31 +313,25 @@ def main():
             db.connect()
             sc.start()
             
-            # TÜRKİYE SAATİNE GÖRE BUGÜN VE YARIN HESAPLAMASI (UTC+3)
             tz_tr = dt.timezone(dt.timedelta(hours=3))
             now_tr = dt.datetime.now(tz_tr)
             today_tr = now_tr.date()
-            target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)] # Sadece TR Bugün ve TR Yarın
+            target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)]
             
-            # Saat farkından dolayı sınırda kalanları (gece maçları) kaçırmamak için dünden başlayıp yarından sonrasına kadar tarama yapıyoruz (-1, 0, 1)
             for i in [-1, 0, 1]:
                 fetch_date = today_tr + dt.timedelta(days=i)
                 date_str = fetch_date.strftime("%Y-%m-%d")
                 events = sc.by_date(date_str)
                 
-                # --- HATA AYIKLAMA (DEBUG) İÇİN EKLENEN SATIR ---
                 print(f"[DEBUG] {date_str} tarihi için API'den {len(events)} adet HAM etkinlik verisi geldi.") 
-                # -----------------------------------------------
 
                 p_count = 0
                 for ev in events:
-                    # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
                     ts = ev.get("startTimestamp")
                     if not isinstance(ts, int):
                         continue
                     ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
                     
-                    # SADECE TR SAATİYLE BUGÜN VE YARIN OLANLARI İŞLE
                     if ev_dt_tr.date() not in target_dates_tr:
                         continue
 
@@ -346,7 +342,6 @@ def main():
                         ev_id = ev.get("id")
                         status = (ev.get("status", {}).get("type") or "").lower()
                         
-                        # SADECE BAŞLAMAMIŞ MAÇLAR
                         if status in ["notstarted", "scheduled"]:
                             extra_data = {
                                 "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
@@ -356,7 +351,6 @@ def main():
                                 "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
                             }
 
-                            # Oranları çek
                             odds = sc.get_odds(ev_id)
                             extra_data.update(odds)
 
@@ -370,11 +364,9 @@ def main():
         except Exception as e: 
             print(f"[HATA]: İşlem sırasında bir sorun oluştu: {e}")
         finally: 
-            # Tarayıcıyı ve DB bağlantısını her deneme sonunda düzgünce kapatıyoruz
             sc.stop()
             db.close()
 
-        # Döngü sonu kontrolü: Eğer veri başarıyla çekildiyse döngüyü kır ve tamamen çık
         if total_processed_in_this_run > 0:
             print(f"\n[BAŞARILI] Toplam {total_processed_in_this_run} maç işlendi. Script sorunsuz tamamlandı.")
             break
@@ -385,8 +377,6 @@ def main():
                 time.sleep(15)
             attempt += 1
 
-    # Eğer 3 deneme de bittiyse ve hala hiç veri çekilemediyse GitHub Actions'ı hatalı bitir.
-    # (Not: Yaz dönemlerinde veya fikstürün gerçekten boş olduğu nadir günlerde de bu hata tetiklenebilir.)
     if total_processed_in_this_run == 0:
         print("\n[KRİTİK HATA] Maksimum deneme sayısına ulaşıldı ancak hiçbir veri çekilemedi.")
         sys.exit(1)
