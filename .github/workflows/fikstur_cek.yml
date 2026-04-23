@@ -23,8 +23,8 @@ jobs:
       - name: Gerekli Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          # DİKKAT: playwright-stealth kütüphanesini ekledik
-          pip install mysql-connector-python playwright playwright-stealth
+          # DİKKAT: Hata almamak için kütüphane sürümünü 1.0.6'ya sabitledik!
+          pip install mysql-connector-python playwright playwright-stealth==1.0.6
           playwright install --with-deps chromium
 
       - name: Fikstür Scriptini Çalıştır
@@ -34,4 +34,5 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-        run: python fikstur_cek3.py
+        # NOT: Çalıştırdığın dosyanın adı fikstur_cek3.py ise burayı da öyle yapmalısın.
+        run: python fikstur_cek.py
