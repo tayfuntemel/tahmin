@@ -24,7 +24,7 @@ CONFIG = {
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     "scraper": {
-        "sleep_between_requests": 0.5 
+        "sleep_between_requests": 1.5  # Sunucuda ban yememek için süreyi biraz daha güvenli tuttuk
     }
 }
 
@@ -93,15 +93,11 @@ class DB:
         self.conn = mysql.connector.connect(**self.cfg)
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
-        
-        # Tabloyu oluştur
         self.cur.execute(SCHEMA_CREATE_TABLE)
-        
-        # Sütunlar yoksa tabloya ekle
         try:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
-            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi veya zaten var.")
-        except mysql.connector.Error as err:
+            print("[DB] 'match_year' ve 'match_week' sütunları hazır.")
+        except mysql.connector.Error:
             pass
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
@@ -141,10 +137,18 @@ class Scraper:
 
     def start(self):
         self.p = sync_playwright().start()
-        self.browser = self.p.chromium.launch(headless=True)
+        # GitHub Actions (Ubuntu) için zorunlu parametreler eklendi
+        self.browser = self.p.chromium.launch(
+            headless=True, 
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
         ctx = self.browser.new_context(user_agent=self.api["user_agent"], extra_http_headers=self.api["headers"])
         self.page = ctx.new_page()
+        
+        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor, güvenlik çerezleri alınıyor...")
+        # Önce ana sayfaya gidip sitenin bizi "gerçek kullanıcı" olarak tanımasını sağlıyoruz.
         self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
+        time.sleep(5) # Çerezlerin ve arka plan scriptlerinin tam oturması için 5 saniye bekliyoruz
 
     def stop(self):
         if self.browser: self.browser.close()
@@ -152,16 +156,26 @@ class Scraper:
 
     def _fetch_json(self, url: str) -> dict:
         try:
-            time.sleep(self.api.get("sleep_between_requests", 0.3))
-            self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            data_text = self.page.evaluate("() => document.body.innerText")
+            time.sleep(self.api.get("sleep_between_requests", 1.5))
             
-            # --- YENİ EKLENDİ ---
-            # Sofascore bize ne gönderiyor görebilmek için ham veriyi yazdırıyoruz.
+            # API'ye doğrudan sayfa açarak gitmek yerine, ana sayfa üzerinden JS Fetch isteği atıyoruz.
+            # Bu sayede Cloudflare (403 Forbidden) engellerini aşıyoruz.
+            data = self.page.evaluate('''async (req_url) => {
+                try {
+                    const res = await fetch(req_url);
+                    if (!res.ok) {
+                        return { "error": { "code": res.status, "reason": res.statusText } };
+                    }
+                    return await res.json();
+                } catch (e) {
+                    return { "error": "Fetch_Exception", "details": e.toString() };
+                }
+            }''', url)
+
             url_son_kisim = url.split('/')[-1]
-            print(f"\n[API RAW YANIT] {url_son_kisim} -> {data_text[:300]}...")
+            print(f"\n[API RAW YANIT] {url_son_kisim} -> {str(data)[:300]}...")
             
-            return json.loads(data_text)
+            return data
         except Exception as e:
             print(f"\n[API HATASI] URL: {url}")
             print(f"[API HATASI] Detay: {e}")
@@ -261,7 +275,6 @@ class Scraper:
         url = f"{self.api['base_url']}/sport/football/scheduled-events/{date_str}"
         data = self._fetch_json(url)
         
-        # Eğer events anahtarı yoksa bunu da loga düşelim
         if "events" not in data:
             print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
             
