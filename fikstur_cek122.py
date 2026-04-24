@@ -1,24 +1,9 @@
 #!/usr/bin/env python3
 import os
-import datetime as dt, time, json, sys, random
+import datetime as dt, time, json, sys
 import mysql.connector
+import requests
 from typing import Dict, Any, List
-from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
-
-# --- WEBSHARE PROXY LİSTEMİZ ---
-PROXY_LIST = [
-    "31.59.20.176:6754:czvalxxh:kmi3cfupz0ld",
-    "198.23.239.134:6540:czvalxxh:kmi3cfupz0ld",
-    "45.38.107.97:6014:czvalxxh:kmi3cfupz0ld",
-    "107.172.163.27:6543:czvalxxh:kmi3cfupz0ld",
-    "198.105.121.200:6462:czvalxxh:kmi3cfupz0ld",
-    "216.10.27.159:6837:czvalxxh:kmi3cfupz0ld",
-    "142.111.67.146:5611:czvalxxh:kmi3cfupz0ld",
-    "191.96.254.138:6185:czvalxxh:kmi3cfupz0ld",
-    "31.58.9.4:6077:czvalxxh:kmi3cfupz0ld",
-    "104.239.107.47:5699:czvalxxh:kmi3cfupz0ld"
-]
 
 CONFIG = {
     "db": {
@@ -28,12 +13,8 @@ CONFIG = {
         "database": os.getenv("DB_NAME"),
         "port": int(os.getenv("DB_PORT", 3306))
     },
-    "api": {
-        "base_url": "https://api.sofascore.com/api/v1",
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    },
     "scraper": {
-        "sleep_between_requests": 2.5 
+        "sleep_between_requests": 1.0 
     }
 }
 
@@ -47,6 +28,7 @@ MAJOR_TOURNAMENT_IDS = {
 }
 
 SCHEMA_CREATE_TABLE = """
+# ... (Tablo yapısı tamamen aynı, değişiklik yok)
 CREATE TABLE IF NOT EXISTS results_football (
   event_id        BIGINT UNSIGNED NOT NULL,
   start_utc       DATE NULL,
@@ -139,76 +121,48 @@ class DB:
 class Scraper:
     def __init__(self, cfg):
         self.api = cfg
-        self.browser = None
-        self.page = None
-        self.p = None
+        # KENDİ SCRAPERAPI ANAHTARINI BURAYA YAPIŞTIRMALISIN
+        self.scraper_api_key = "48c0f9af1ba5cc24348d76ca5240faff"
 
     def start(self):
-        self.p = sync_playwright().start()
-        
-        # --- PROXY SEÇİMİ VE AYARLANMASI ---
-        # 10 proxy arasından rastgele birini seçiyoruz
-        secilen_proxy = random.choice(PROXY_LIST)
-        ip, port, user, pw = secilen_proxy.split(":")
-        
-        proxy_ayarlari = {
-            "server": f"http://{ip}:{port}",
-            "username": user,
-            "password": pw
-        }
-        
-        print(f"[SİSTEM] Rastgele Proxy Seçildi: {ip}:{port} (Sofascore artık bu IP'yi görecek)")
-
-        # Tarayıcıyı proxy ile başlatıyoruz
-        self.browser = self.p.chromium.launch(
-            headless=True, 
-            proxy=proxy_ayarlari, # Proxy aktif!
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
-        )
-        
-        ctx = self.browser.new_context(
-            user_agent=self.api["user_agent"],
-            viewport={"width": 1920, "height": 1080}
-        )
-        self.page = ctx.new_page()
-        stealth_sync(self.page) # Hayalet mod aktif!
-        
-        print("[SİSTEM] Sofascore ana sayfasına bağlanılıyor...")
-        self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
-        time.sleep(20)
+        print("[SİSTEM] ScraperAPI aktif! Ağır tarayıcılar kaldırıldı, süper hızlı çekim başlıyor...")
 
     def stop(self):
-        if self.browser: self.browser.close()
-        if self.p: self.p.stop()
+        print("[SİSTEM] ScraperAPI bağlantısı sorunsuz kapatıldı.")
 
-    def _fetch_json(self, url: str) -> dict:
+    def _fetch_json(self, target_url: str) -> dict:
         try:
-            time.sleep(self.api.get("sleep_between_requests", 2.5))
+            time.sleep(self.api.get("sleep_between_requests", 1.0))
             
-            self.page.goto(url, wait_until="domcontentloaded")
-            time.sleep(2) 
+            # Bütün işi ScraperAPI'ye devrettiğimiz yer!
+            payload = {
+                'api_key': self.scraper_api_key, 
+                'url': target_url
+            }
             
-            data_text = self.page.evaluate("() => document.body.innerText")
-            url_son_kisim = url.split('/')[-1]
+            url_son_kisim = target_url.split('/')[-1]
+            print(f"[İSTEK] {url_son_kisim} -> ScraperAPI üzerinden isteniyor...")
             
-            try:
-                data = json.loads(data_text)
+            # ScraperAPI'nin bizim yerimize Cloudflare'i çözmesi için 60 saniye süre veriyoruz
+            response = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
+            
+            if response.status_code == 200:
+                data = response.json()
                 if "error" in data:
-                    print(f"\n[IP ENGELİ] {url_son_kisim} -> {data['error']}. (Proxy engellenmiş olabilir, sonraki denemede değişecek)")
+                    print(f"\n[SOFASCORE ENGELİ] {url_son_kisim} -> {data['error']}")
                     return {}
-                
-                print(f"\n[API BAŞARILI] {url_son_kisim} -> Veri çekildi!")
+                print(f"[BAŞARILI] {url_son_kisim} -> Veri çekildi!")
                 return data
-            except json.JSONDecodeError:
-                print(f"\n[HTML DÖNDÜ / JSON DEĞİL] {url_son_kisim} -> {data_text[:100]}...")
+            else:
+                print(f"\n[SCRAPERAPI HATASI] HTTP {response.status_code} - {response.text[:100]}")
                 return {}
                 
         except Exception as e:
-            print(f"\n[API HATASI] URL: {url} | Detay: {e}")
+            print(f"\n[SİSTEM HATASI] URL: {target_url} | Detay: {e}")
             return {}
 
     def get_odds(self, event_id) -> Dict[str, Any]:
-        url = f"{self.api['base_url']}/event/{event_id}/odds/1/all"
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/odds/1/all"
         data = self._fetch_json(url)
         
         res = {
@@ -298,14 +252,8 @@ class Scraper:
         return res
 
     def by_date(self, date_str) -> List[Dict[str, Any]]:
-        url = f"{self.api['base_url']}/sport/football/scheduled-events/{date_str}"
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
         data = self._fetch_json(url)
-        
-        if "events" not in data:
-            if data: 
-                print(f"[JSON UYARISI] Gelen veride 'events' listesi bulunamadı! İçindeki anahtarlar: {list(data.keys())}")
-            return []
-            
         return data.get("events", [])
 
     def parse(self, ev: Dict[str, Any], extra_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -347,7 +295,7 @@ def main():
         print(f"\n--- ÇALIŞTIRMA DENEMESİ {attempt}/{max_retries} ---")
         
         db = DB(CONFIG["db"])
-        sc = Scraper(CONFIG["api"])
+        sc = Scraper(CONFIG["scraper"])
         total_processed_in_this_run = 0
         
         try:
@@ -414,7 +362,7 @@ def main():
         else:
             print(f"\n[UYARI] Bu denemede HİÇBİR maç verisi çekilemedi (Toplam 0 maç)!")
             if attempt < max_retries:
-                print("15 saniye bekleniyor, ardından yeni bir proxy ile tekrar denenecek...")
+                print("15 saniye bekleniyor, ardından tekrar denenecek...")
                 time.sleep(15)
             attempt += 1
 
