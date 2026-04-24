@@ -131,7 +131,7 @@ class Scraper:
     def __init__(self, cfg):
         self.cfg = cfg
         # KENDİ SCRAPERAPI ANAHTARINI BURAYA YAPIŞTIRMALISIN
-        self.scraper_api_key = "BURAYA_API_KEY_YAPISTIR"
+        self.scraper_api_key = "48c0f9af1ba5cc24348d76ca5240faff"
 
     def start(self):
         print("[SİSTEM] ScraperAPI aktif! Maç Güncelleme botu başlatılıyor...")
