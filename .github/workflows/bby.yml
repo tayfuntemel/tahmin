@@ -5,7 +5,7 @@ env:
 
 on:
   schedule:
-    # TR Saati ile 02:00 (UTC 21:00 bir önceki gün) ve 14:00 (UTC 11:00)
+    # TR Saati ile 02:00 (UTC 23:00) ve 14:00 (UTC 11:00)
     - cron: '0 23,11 * * *'
   workflow_dispatch:
 
@@ -24,7 +24,8 @@ jobs:
       - name: Gerekli Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install mysql-connector-python curl_cffi
+          pip install -r requirements.txt
+          playwright install chromium
 
       - name: Fikstür Scriptini Çalıştır
         env:
