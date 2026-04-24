@@ -6,7 +6,7 @@ import json
 import sys
 import mysql.connector
 from typing import Dict, Any, List
-from curl_cffi import requests
+from playwright.sync_api import sync_playwright
 
 CONFIG = {
     "db": {
@@ -16,18 +16,10 @@ CONFIG = {
         "database": os.getenv("DB_NAME"),
         "port": int(os.getenv("DB_PORT", 3306))
     },
-    "api": {
-        "base_url": "https://api.sofascore.com/api/v1",
-        "headers": {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.sofascore.com/",
-        },
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "impersonate": "chrome120"   # curl_cffi'nin taklit edeceği tarayıcı
-    },
     "scraper": {
-        "sleep_between_requests": 0.5
+        "headless": True,
+        "timeout": 30000,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 }
 
@@ -97,7 +89,6 @@ class DB:
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
         self.cur.execute(SCHEMA_CREATE_TABLE)
-        # Eksik sütunları ekle
         try:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
             print("[DB] 'match_year' ve 'match_week' sütunları eklendi.")
@@ -135,130 +126,239 @@ class DB:
 
 class Scraper:
     def __init__(self, cfg):
-        self.api_cfg = cfg
-        self.session = requests.Session()
-        self.session.headers.update(cfg["headers"])
-        self.session.headers["User-Agent"] = cfg["user_agent"]
-        self.impersonate = cfg.get("impersonate", "chrome120")
+        self.cfg = cfg
+        self.playwright = None
+        self.browser = None
+        self.page = None
 
-    def _fetch_json(self, url: str) -> dict:
-        try:
-            time.sleep(CONFIG["scraper"]["sleep_between_requests"])
-            response = self.session.get(url, impersonate=self.impersonate, timeout=15)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"[API Hatası] {url} -> {e}")
-            return {}
+    def start(self):
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(headless=self.cfg["headless"])
+        context = self.browser.new_context(
+            user_agent=self.cfg["user_agent"],
+            viewport={"width": 1280, "height": 800}
+        )
+        self.page = context.new_page()
+        # Ana sayfayı ziyaret ederek cookie/oturum al
+        self.page.goto("https://www.sofascore.com/", timeout=self.cfg["timeout"])
+        time.sleep(2)
 
-    def get_odds(self, event_id) -> Dict[str, Any]:
-        url = f"{self.api_cfg['base_url']}/event/{event_id}/odds/1/all"
-        data = self._fetch_json(url)
+    def get_matches_for_date(self, date_str: str) -> List[Dict]:
+        """Belirtilen tarih için (YYYY-MM-DD) Sofascore sayfasını açar ve maç listesini döndürür."""
+        url = f"https://www.sofascore.com/tr/futbol/{date_str}"
+        self.page.goto(url, timeout=self.cfg["timeout"])
+        # Sayfanın tamamen yüklenmesi için bekle
+        self.page.wait_for_timeout(3000)
         
-        res = {
+        # Sayfadaki `__NUXT__` veya `__INITIAL_STATE__` değişkenini al
+        # Önce `window.__NUXT__` dene, yoksa `window.__INITIAL_STATE__`
+        try:
+            nuxt = self.page.evaluate("() => window.__NUXT__")
+            if nuxt and isinstance(nuxt, dict):
+                return self._extract_events_from_nuxt(nuxt)
+        except:
+            pass
+        
+        try:
+            init_state = self.page.evaluate("() => window.__INITIAL_STATE__")
+            if init_state and isinstance(init_state, dict):
+                return self._extract_events_from_initial_state(init_state)
+        except:
+            pass
+        
+        # Son çare: sayfa içindeki script etiketlerini ara
+        scripts = self.page.evaluate("""
+            () => {
+                const results = [];
+                const scripts = document.querySelectorAll('script[type="application/json"]');
+                for (let s of scripts) {
+                    try {
+                        const data = JSON.parse(s.innerText);
+                        results.push(data);
+                    } catch(e) {}
+                }
+                return results;
+            }
+        """)
+        for data in scripts:
+            events = self._find_events_in_json(data)
+            if events:
+                return events
+        return []
+
+    def _extract_events_from_nuxt(self, nuxt: dict) -> List[Dict]:
+        # __NUXT__ yapısı değişken olabilir, içinde "scheduledEvents" veya "events" arıyoruz
+        def search(obj):
+            if isinstance(obj, dict):
+                if "scheduledEvents" in obj:
+                    return obj["scheduledEvents"]
+                if "events" in obj and isinstance(obj["events"], list):
+                    return obj["events"]
+                for v in obj.values():
+                    res = search(v)
+                    if res: return res
+            elif isinstance(obj, list):
+                for item in obj:
+                    res = search(item)
+                    if res: return res
+            return None
+        events = search(nuxt)
+        return events if isinstance(events, list) else []
+
+    def _extract_events_from_initial_state(self, state: dict) -> List[Dict]:
+        # __INITIAL_STATE__ genellikle "page" -> "sport" -> "scheduledEvents" içerir
+        try:
+            return state.get("page", {}).get("sport", {}).get("scheduledEvents", [])
+        except:
+            return []
+
+    def _find_events_in_json(self, data: dict) -> List[Dict]:
+        # Herhangi bir JSON nesnesinde "events" veya "scheduledEvents" anahtarını tara
+        if isinstance(data, dict):
+            if "scheduledEvents" in data and isinstance(data["scheduledEvents"], list):
+                return data["scheduledEvents"]
+            if "events" in data and isinstance(data["events"], list):
+                return data["events"]
+            for v in data.values():
+                res = self._find_events_in_json(v)
+                if res: return res
+        elif isinstance(data, list):
+            for item in data:
+                res = self._find_events_in_json(item)
+                if res: return res
+        return []
+
+    def get_odds(self, event_id: int) -> Dict[str, Any]:
+        """Oranları almak için doğrudan API'ye değil, maç sayfasına gidip oradan çekiyoruz."""
+        url = f"https://www.sofascore.com/tr/mac/{event_id}"
+        self.page.goto(url, timeout=self.cfg["timeout"])
+        self.page.wait_for_timeout(2000)
+        
+        # Oranlar genellikle `__NUXT__` içinde gelir
+        try:
+            nuxt = self.page.evaluate("() => window.__NUXT__")
+            if nuxt:
+                odds = self._extract_odds_from_nuxt(nuxt)
+                if any(odds.values()):
+                    return odds
+        except:
+            pass
+        # Hiç oran bulunamazsa boş dict döner
+        return {
             "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
             "odds_btts_yes": None, "odds_btts_no": None, "odds_o05": None, "odds_u05": None,
             "odds_o15": None, "odds_u15": None, "odds_o25": None, "odds_u25": None,
             "odds_o35": None, "odds_u35": None, "odds_o45": None, "odds_u45": None,
             "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
         }
-        
-        def get_decimal_odd(c_dict):
-            if c_dict.get("decimalValue"):
-                try: return float(c_dict["decimalValue"])
-                except: pass
-            frac_str = c_dict.get("fractionalValue")
-            if not frac_str: return None
-            if str(frac_str).upper() == "EVS": return 2.0
-            try:
-                if '/' in str(frac_str):
-                    n, d = str(frac_str).split('/')
-                    return round((float(n) / float(d)) + 1, 2)
-                return float(frac_str)
-            except:
-                return None
 
-        markets = data.get("markets", [])
-        for m in markets:
-            m_name = str(m.get("marketName", "")).strip().lower()
-            choices = m.get("choices", [])
-            m_str = json.dumps(m).lower()
-            
-            if "full time" in m_name or "full-time" in m_name or "1x2" in m_name:
-                for c in choices:
-                    c_name = str(c.get("name", "")).strip().upper()
-                    if c_name == "1": res["odds_1"] = get_decimal_odd(c)
-                    elif c_name == "X": res["odds_x"] = get_decimal_odd(c)
-                    elif c_name == "2": res["odds_2"] = get_decimal_odd(c)
-            elif "double chance" in m_name:
-                for c in choices:
-                    c_name = str(c.get("name", "")).strip().upper()
-                    if c_name == "1X": res["odds_1x"] = get_decimal_odd(c)
-                    elif c_name == "12": res["odds_12"] = get_decimal_odd(c)
-                    elif c_name == "X2": res["odds_x2"] = get_decimal_odd(c)
-            elif "both teams to score" in m_name:
-                for c in choices:
-                    c_name = str(c.get("name", "")).strip().lower()
-                    if c_name == "yes": res["odds_btts_yes"] = get_decimal_odd(c)
-                    elif c_name == "no": res["odds_btts_no"] = get_decimal_odd(c)
-            elif ("goals" in m_name or "over/under" in m_name) and "half" not in m_name and "team" not in m_name and "exact" not in m_name:
-                for c in choices:
-                    c_name = str(c.get("name", "")).strip().lower()
-                    c_str = json.dumps(c).lower()
-                    
-                    line_found = None
-                    baremler = ["0.5", "1.5", "2.5", "3.5", "4.5", "5.5", "6.5", "7.5"]
-                    
-                    for line in baremler:
-                        if line in c_str:
-                            line_found = line; break
-                    if not line_found:
-                        for line in baremler:
-                            if line in m_str:
-                                line_found = line; break
-                    if not line_found and m.get("isMain"):
-                        line_found = "2.5"
-                    
-                    if line_found:
-                        val = get_decimal_odd(c)
-                        if "over" in c_name or "üst" in c_name or c_name == "o":
-                            if line_found == "0.5": res["odds_o05"] = val
-                            elif line_found == "1.5": res["odds_o15"] = val
-                            elif line_found == "2.5": res["odds_o25"] = val
-                            elif line_found == "3.5": res["odds_o35"] = val
-                            elif line_found == "4.5": res["odds_o45"] = val
-                            elif line_found == "5.5": res["odds_o55"] = val
-                            elif line_found == "6.5": res["odds_o65"] = val
-                            elif line_found == "7.5": res["odds_o75"] = val
-                        elif "under" in c_name or "alt" in c_name or c_name == "u":
-                            if line_found == "0.5": res["odds_u05"] = val
-                            elif line_found == "1.5": res["odds_u15"] = val
-                            elif line_found == "2.5": res["odds_u25"] = val
-                            elif line_found == "3.5": res["odds_u35"] = val
-                            elif line_found == "4.5": res["odds_u45"] = val
-                            elif line_found == "5.5": res["odds_u55"] = val
-                            elif line_found == "6.5": res["odds_u65"] = val
-                            elif line_found == "7.5": res["odds_u75"] = val
-        return res
+    def _extract_odds_from_nuxt(self, nuxt: dict) -> Dict[str, Any]:
+        odds = {
+            "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
+            "odds_btts_yes": None, "odds_btts_no": None, "odds_o05": None, "odds_u05": None,
+            "odds_o15": None, "odds_u15": None, "odds_o25": None, "odds_u25": None,
+            "odds_o35": None, "odds_u35": None, "odds_o45": None, "odds_u45": None,
+            "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
+        }
+        # __NUXT__ içinde odds verisi arayalım (örnek path)
+        try:
+            # Genellikle state -> oddsMarketGroups şeklinde
+            markets = nuxt.get("state", {}).get("oddsMarketGroups", [])
+            if not markets:
+                # farklı bir yapı deneyelim
+                markets = self._deep_search(nuxt, "oddsMarketGroups")
+            for market in markets:
+                market_name = market.get("marketName", "").lower()
+                choices = market.get("choices", [])
+                if "full time" in market_name or "1x2" in market_name:
+                    for c in choices:
+                        name = c.get("name", "").upper()
+                        decimal = c.get("decimalValue")
+                        if name == "1":
+                            odds["odds_1"] = float(decimal) if decimal else None
+                        elif name == "X":
+                            odds["odds_x"] = float(decimal) if decimal else None
+                        elif name == "2":
+                            odds["odds_2"] = float(decimal) if decimal else None
+                elif "double chance" in market_name:
+                    for c in choices:
+                        name = c.get("name", "").upper()
+                        decimal = c.get("decimalValue")
+                        if name == "1X":
+                            odds["odds_1x"] = float(decimal) if decimal else None
+                        elif name == "12":
+                            odds["odds_12"] = float(decimal) if decimal else None
+                        elif name == "X2":
+                            odds["odds_x2"] = float(decimal) if decimal else None
+                elif "both teams to score" in market_name:
+                    for c in choices:
+                        name = c.get("name", "").lower()
+                        decimal = c.get("decimalValue")
+                        if name == "yes":
+                            odds["odds_btts_yes"] = float(decimal) if decimal else None
+                        elif name == "no":
+                            odds["odds_btts_no"] = float(decimal) if decimal else None
+                elif "over/under" in market_name or "goals" in market_name:
+                    for c in choices:
+                        name = c.get("name", "").lower()
+                        decimal = c.get("decimalValue")
+                        line = c.get("line")
+                        if line:
+                            if "over" in name:
+                                if line == 0.5: odds["odds_o05"] = float(decimal) if decimal else None
+                                elif line == 1.5: odds["odds_o15"] = float(decimal) if decimal else None
+                                elif line == 2.5: odds["odds_o25"] = float(decimal) if decimal else None
+                                elif line == 3.5: odds["odds_o35"] = float(decimal) if decimal else None
+                                elif line == 4.5: odds["odds_o45"] = float(decimal) if decimal else None
+                                elif line == 5.5: odds["odds_o55"] = float(decimal) if decimal else None
+                                elif line == 6.5: odds["odds_o65"] = float(decimal) if decimal else None
+                                elif line == 7.5: odds["odds_o75"] = float(decimal) if decimal else None
+                            elif "under" in name:
+                                if line == 0.5: odds["odds_u05"] = float(decimal) if decimal else None
+                                elif line == 1.5: odds["odds_u15"] = float(decimal) if decimal else None
+                                elif line == 2.5: odds["odds_u25"] = float(decimal) if decimal else None
+                                elif line == 3.5: odds["odds_u35"] = float(decimal) if decimal else None
+                                elif line == 4.5: odds["odds_u45"] = float(decimal) if decimal else None
+                                elif line == 5.5: odds["odds_u55"] = float(decimal) if decimal else None
+                                elif line == 6.5: odds["odds_u65"] = float(decimal) if decimal else None
+                                elif line == 7.5: odds["odds_u75"] = float(decimal) if decimal else None
+        except:
+            pass
+        return odds
 
-    def by_date(self, date_str) -> List[Dict[str, Any]]:
-        url = f"{self.api_cfg['base_url']}/sport/football/scheduled-events/{date_str}"
-        data = self._fetch_json(url)
-        return data.get("events", [])
+    def _deep_search(self, obj, key):
+        """Rekürsif olarak bir dict/list içinde belirtilen anahtarı ara"""
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj[key]
+            for v in obj.values():
+                res = self._deep_search(v, key)
+                if res is not None:
+                    return res
+        elif isinstance(obj, list):
+            for item in obj:
+                res = self._deep_search(item, key)
+                if res is not None:
+                    return res
+        return None
 
-    def parse(self, ev: Dict[str, Any], extra_data: Dict[str, Any]) -> Dict[str, Any]:
+    def parse_match(self, ev: Dict) -> Dict[str, Any]:
+        """Sayfadan alınan ham maç verisini tablo satırına dönüştür"""
         ts = ev.get("startTimestamp")
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         dt_tr = dt.datetime.fromtimestamp(ts, tz_tr) if isinstance(ts, int) else None
-        
         match_year, match_week = None, None
         if dt_tr:
             match_year, match_week, _ = dt_tr.isocalendar()
-            
-        status = (ev.get("status", {}).get("type") or "").lower()
-        t = ev.get("tournament") or {}; u = ev.get("uniqueTournament") or {}
-        cat = (t.get("category") or {}) if "category" in t else (u.get("category") or {})
-
+        
+        status = ev.get("status", {}).get("type", "").lower()
+        home = ev.get("homeTeam", {})
+        away = ev.get("awayTeam", {})
+        tournament = ev.get("tournament", {})
+        unique_tournament = ev.get("uniqueTournament", {})
+        category = tournament.get("category", {}) or unique_tournament.get("category", {})
+        country = category.get("country", {})
+        
         row = {
             "event_id": ev.get("id"),
             "start_utc": dt_tr.strftime("%Y-%m-%d") if dt_tr else None,
@@ -266,89 +366,97 @@ class Scraper:
             "match_year": match_year,
             "match_week": match_week,
             "status": status,
-            "home_team": (ev.get("homeTeam") or {}).get("name"),
-            "away_team": (ev.get("awayTeam") or {}).get("name"),
-            "tournament_id": u.get("id") or t.get("id"),
-            "tournament_name": u.get("name") or t.get("name"),
-            "category_id": cat.get("id"),
-            "category_name": cat.get("name"),
-            "country": (cat.get("country") or {}).get("name") if isinstance(cat.get("country"), dict) else cat.get("name")
+            "home_team": home.get("name"),
+            "away_team": away.get("name"),
+            "tournament_id": unique_tournament.get("id") or tournament.get("id"),
+            "tournament_name": unique_tournament.get("name") or tournament.get("name"),
+            "category_id": category.get("id"),
+            "category_name": category.get("name"),
+            "country": country.get("name") if isinstance(country, dict) else category.get("country")
         }
-        row.update(extra_data)
         return row
+
+    def stop(self):
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+
 
 def main():
     max_retries = 3
     attempt = 1
-    total_processed_in_this_run = 0
+    total_processed = 0
 
     while attempt <= max_retries:
         print(f"\n--- ÇALIŞTIRMA DENEMESİ {attempt}/{max_retries} ---")
         db = DB(CONFIG["db"])
-        sc = Scraper(CONFIG["api"])
-        processed_count = 0
-        
+        sc = Scraper(CONFIG["scraper"])
+        processed_this_attempt = 0
+
         try:
             db.connect()
+            sc.start()
+            
             tz_tr = dt.timezone(dt.timedelta(hours=3))
             now_tr = dt.datetime.now(tz_tr)
             today_tr = now_tr.date()
-            target_dates_tr = [today_tr, today_tr + dt.timedelta(days=1)]
+            target_dates = [today_tr, today_tr + dt.timedelta(days=1)]
             
-            for i in [-1, 0, 1]:
-                fetch_date = today_tr + dt.timedelta(days=i)
-                date_str = fetch_date.strftime("%Y-%m-%d")
-                events = sc.by_date(date_str)
+            for single_date in target_dates:
+                date_str = single_date.strftime("%Y-%m-%d")
+                print(f"[TARAMA] {date_str} için maçlar alınıyor...")
+                events = sc.get_matches_for_date(date_str)
                 
-                p_count = 0
+                if not events:
+                    print(f"  {date_str} için hiç maç bulunamadı veya alınamadı.")
+                    continue
+                
+                count = 0
                 for ev in events:
-                    ts = ev.get("startTimestamp")
-                    if not isinstance(ts, int):
-                        continue
-                    ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
-                    if ev_dt_tr.date() not in target_dates_tr:
+                    # Sadece başlamamış maçları filtrele
+                    status = ev.get("status", {}).get("type", "").lower()
+                    if status not in ["notstarted", "scheduled"]:
                         continue
                     
+                    # Turnuva filtresi
                     t_id = ev.get("tournament", {}).get("id")
                     u_id = ev.get("uniqueTournament", {}).get("id")
-                    if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
-                        ev_id = ev.get("id")
-                        status = (ev.get("status", {}).get("type") or "").lower()
-                        if status in ["notstarted", "scheduled"]:
-                            extra_data = {
-                                "odds_1": None, "odds_x": None, "odds_2": None, "odds_1x": None, "odds_12": None, "odds_x2": None,
-                                "odds_btts_yes": None, "odds_btts_no": None, "odds_o05": None, "odds_u05": None,
-                                "odds_o15": None, "odds_u15": None, "odds_o25": None, "odds_u25": None,
-                                "odds_o35": None, "odds_u35": None, "odds_o45": None, "odds_u45": None,
-                                "odds_o55": None, "odds_u55": None, "odds_o65": None, "odds_u65": None, "odds_o75": None, "odds_u75": None
-                            }
-                            odds = sc.get_odds(ev_id)
-                            extra_data.update(odds)
-                            row = sc.parse(ev, extra_data)
-                            db.upsert_match(row)
-                            p_count += 1
-                            processed_count += 1
-                            total_processed_in_this_run += 1
-                print(f"[BAŞLAMAMIŞ MAÇLAR] {date_str} için API isteği → {p_count} maç işlendi.")
+                    if t_id not in MAJOR_TOURNAMENT_IDS and u_id not in MAJOR_TOURNAMENT_IDS:
+                        continue
+                    
+                    ev_id = ev.get("id")
+                    print(f"  Maç {ev_id}: {ev.get('homeTeam',{}).get('name')} vs {ev.get('awayTeam',{}).get('name')} -> oranlar çekiliyor...")
+                    odds = sc.get_odds(ev_id)
+                    
+                    row = sc.parse_match(ev)
+                    row.update(odds)
+                    db.upsert_match(row)
+                    count += 1
+                    processed_this_attempt += 1
+                    total_processed += 1
+                
+                print(f"[TAMAMLANDI] {date_str} için {count} maç işlendi.")
+            
+            if processed_this_attempt == 0:
+                print("[UYARI] Hiç maç işlenemedi, tekrar deneniyor...")
+                if attempt < max_retries:
+                    time.sleep(15)
+                attempt += 1
+            else:
+                print(f"[BAŞARILI] Toplam {processed_this_attempt} maç işlendi.")
+                break
                 
         except Exception as e:
             print(f"[HATA] {e}")
-        finally:
-            sc.session.close()
-            db.close()
-        
-        if processed_count > 0:
-            print(f"\n[BAŞARILI] Bu denemede {processed_count} maç işlendi.")
-            # Başarılı oldu, döngüden çık
-            break
-        else:
-            print("[UYARI] Hiç maç işlenemedi, tekrar deneniyor...")
-            if attempt < max_retries:
-                time.sleep(15)
             attempt += 1
+            time.sleep(15)
+        finally:
+            sc.stop()
+            db.close()
 
-    if total_processed_in_this_run == 0:
-        print("[KRİTİK HATA] 3 denemede de veri çekilemedi.")
+    if total_processed == 0:
+        print("[KRİTİK HATA] Hiç maç verisi çekilemedi.")
         sys.exit(1)
 
 if __name__ == "__main__":
