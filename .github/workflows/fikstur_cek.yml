@@ -2,7 +2,7 @@ name: Fikstur Cek (Gunde 2 Kez)
 
 on:
   schedule:
-    - cron: '0 21,11 * * *'
+    - cron: '0 21 * * *'
   workflow_dispatch:
 
 jobs:
