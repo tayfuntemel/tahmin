@@ -2,10 +2,9 @@
 import os
 import datetime as dt, time, json
 import mysql.connector
+import requests
 from typing import Dict, Any, List
-from playwright.sync_api import sync_playwright
 
-# Bilgiler artık kodun içine yazılmıyor, güvenli bir şekilde GitHub Secrets'tan (Environment Variables) çekiliyor.
 CONFIG = {
     "db": {
         "host": os.getenv("DB_HOST"),
@@ -14,13 +13,8 @@ CONFIG = {
         "database": os.getenv("DB_NAME"),
         "port": int(os.getenv("DB_PORT", 3306))
     },
-    "api": {
-        "base_url": "https://api.sofascore.com/api/v1",
-        "headers": {"Accept": "application/json, text/plain, */*"},
-        "user_agent": "Mozilla/5.0"
-    },
     "scraper": {
-        "sleep_between_requests": 0.5 
+        "sleep_between_requests": 1.0 
     }
 }
 
@@ -86,19 +80,11 @@ class DB:
         self.conn = mysql.connector.connect(**self.cfg)
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
-        
-        # Tabloyu oluştur (eğer yoksa)
         self.cur.execute(SCHEMA_CREATE_TABLE)
-        
-        # Sütunlar yoksa tabloya ekle (Mevcut tabloyu günceller)
         try:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
-            print("[DB] 'match_year' ve 'match_week' sütunları başarıyla eklendi.")
-        except mysql.connector.Error as err:
-            # Hata kodu 1060 ise (Duplicate column name), sütun zaten var demektir, görmezden geliriz.
-            if err.errno != 1060:
-                print(f"[DB] Tablo güncellenirken uyarı: {err}")
-
+        except mysql.connector.Error:
+            pass
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
@@ -143,33 +129,50 @@ class DB:
 
 class Scraper:
     def __init__(self, cfg):
-        self.api = cfg
-        self.browser = None
-        self.page = None
-        self.p = None
+        self.cfg = cfg
+        # KENDİ SCRAPERAPI ANAHTARINI BURAYA YAPIŞTIRMALISIN
+        self.scraper_api_key = "BURAYA_API_KEY_YAPISTIR"
 
     def start(self):
-        self.p = sync_playwright().start()
-        self.browser = self.p.chromium.launch(headless=True)
-        ctx = self.browser.new_context(user_agent=self.api["user_agent"], extra_http_headers=self.api["headers"])
-        self.page = ctx.new_page()
-        self.page.goto("https://www.sofascore.com/", wait_until="domcontentloaded")
+        print("[SİSTEM] ScraperAPI aktif! Maç Güncelleme botu başlatılıyor...")
 
     def stop(self):
-        if self.browser: self.browser.close()
-        if self.p: self.p.stop()
+        print("[SİSTEM] ScraperAPI bağlantısı sorunsuz kapatıldı.")
 
-    def _fetch_json(self, url: str) -> dict:
+    def _fetch_json(self, target_url: str) -> dict:
         try:
-            time.sleep(self.api.get("sleep_between_requests", 0.3))
-            self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            data_text = self.page.evaluate("() => document.body.innerText")
-            return json.loads(data_text)
+            time.sleep(self.cfg.get("sleep_between_requests", 1.0))
+            
+            payload = {
+                'api_key': self.scraper_api_key, 
+                'url': target_url
+            }
+            
+            url_son_kisim = target_url.split('/')[-1]
+            # Sadece kritik istekleri ekrana basıp log kalabalığını önlüyoruz
+            if len(url_son_kisim) > 15:
+                print(f"[İSTEK] ...{url_son_kisim[-15:]} -> ScraperAPI üzerinden isteniyor...")
+            else:
+                print(f"[İSTEK] {url_son_kisim} -> ScraperAPI üzerinden isteniyor...")
+                
+            response = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "error" in data:
+                    print(f"\n[SOFASCORE ENGELİ] Hedef: {url_son_kisim} -> {data['error']}")
+                    return {}
+                return data
+            else:
+                print(f"\n[SCRAPERAPI HATASI] HTTP {response.status_code} - {response.text[:100]}")
+                return {}
+                
         except Exception as e:
+            print(f"\n[SİSTEM HATASI] URL: {target_url} | Detay: {e}")
             return {}
 
     def get_detailed_stats(self, event_id) -> Dict[str, Any]:
-        url = f"{self.api['base_url']}/event/{event_id}/statistics"
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
         data = self._fetch_json(url)
         
         res = {
@@ -204,7 +207,7 @@ class Scraper:
         return res
 
     def get_event_details(self, event_id) -> Dict[str, Any]:
-        url = f"{self.api['base_url']}/event/{event_id}"
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}"
         data = self._fetch_json(url)
         ev = data.get("event", {})
         return {
@@ -213,7 +216,7 @@ class Scraper:
 
     def get_incidents_and_lineups(self, event_id) -> Dict[str, Any]:
         res = {"formation_h": None, "formation_a": None}
-        lin_url = f"{self.api['base_url']}/event/{event_id}/lineups"
+        lin_url = f"https://api.sofascore.com/api/v1/event/{event_id}/lineups"
         lin_data = self._fetch_json(lin_url)
         if lin_data:
             res["formation_h"] = lin_data.get("home", {}).get("formation")
@@ -221,18 +224,16 @@ class Scraper:
         return res
 
     def by_date(self, date_str) -> List[Dict[str, Any]]:
-        url = f"{self.api['base_url']}/sport/football/scheduled-events/{date_str}"
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
         data = self._fetch_json(url)
         return data.get("events", [])
 
     def parse(self, ev: Dict[str, Any], extra_data: Dict[str, Any]) -> Dict[str, Any]:
         ts = ev.get("startTimestamp")
         
-        # TÜRKİYE SAATİNE ÇEVİRME (UTC+3)
         tz_tr = dt.timezone(dt.timedelta(hours=3))
         dt_tr = dt.datetime.fromtimestamp(ts, tz_tr) if isinstance(ts, int) else None
         
-        # Yıl ve hafta hesaplaması
         match_year, match_week = None, None
         if dt_tr:
             match_year, match_week, _ = dt_tr.isocalendar()
@@ -268,24 +269,22 @@ class Scraper:
 def main():
     db = DB(CONFIG["db"])
     db.connect()
-    sc = Scraper(CONFIG["api"])
+    sc = Scraper(CONFIG["scraper"])
     sc.start()
     
     baslangic_zamani = time.time()
-    calisma_suresi = 9 * 60  # 9 dakika (saniye cinsinden)
-    bekleme_suresi = 60      # Her tur arası 60 saniye bekle
+    calisma_suresi = 9 * 60  # 9 dakika
+    bekleme_suresi = 60      # Her tur arası 60 saniye
     
     try:
         while True:
-            # TÜRKİYE SAATİNE GÖRE DÜN VE BUGÜN HESAPLAMASI (UTC+3)
             tz_tr = dt.timezone(dt.timedelta(hours=3))
             now_tr = dt.datetime.now(tz_tr)
             today_tr = now_tr.date()
-            target_dates_tr = [today_tr - dt.timedelta(days=1), today_tr] # Sadece TR Dün ve TR Bugün
+            target_dates_tr = [today_tr - dt.timedelta(days=1), today_tr]
             
             toplam_islenen = 0
             
-            # API sınırlarında kalan gece maçları için geniş tarama yapıyoruz (-2, -1, 0)
             for i in [-2, -1, 0]:
                 fetch_date = today_tr + dt.timedelta(days=i)
                 date_str = fetch_date.strftime("%Y-%m-%d")
@@ -293,13 +292,11 @@ def main():
                 
                 p_count = 0
                 for ev in events:
-                    # Olayın timestamp'ini direkt TR saatine çevirip kontrol ediyoruz
                     ts = ev.get("startTimestamp")
                     if not isinstance(ts, int):
                         continue
                     ev_dt_tr = dt.datetime.fromtimestamp(ts, tz_tr)
                     
-                    # SADECE TR SAATİYLE DÜN VE BUGÜN OLANLARI İŞLE
                     if ev_dt_tr.date() not in target_dates_tr:
                         continue
 
@@ -310,7 +307,6 @@ def main():
                         ev_id = ev.get("id")
                         status = (ev.get("status", {}).get("type") or "").lower()
                         
-                        # SADECE OYNANAN VEYA BİTMİŞ MAÇLAR
                         if status in ["inprogress", "finished", "ended"]:
                             extra_data = {
                                 "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
@@ -322,7 +318,6 @@ def main():
                                 "formation_h": None, "formation_a": None
                             }
 
-                            # Detaylı İstatistikleri çek
                             stats = sc.get_detailed_stats(ev_id)
                             extra_data.update(stats)
                             
@@ -342,11 +337,10 @@ def main():
             
             print(f"[{time.strftime('%H:%M:%S')}] Tur tamamlandı. Toplam {toplam_islenen} maç işlendi.")
             
-            # --- ZAMAN KONTROLÜ ---
             gecen_sure = time.time() - baslangic_zamani
             if gecen_sure >= calisma_suresi:
                 print(f"\n[BİLGİ] {calisma_suresi/60} dakikalık çalışma süresi doldu. Github Actions Cron'un yeniden başlatması için güvenle kapanıyor...")
-                break # Döngüden çık ve programı bitir
+                break
             
             kalan_sure_dk = (calisma_suresi - gecen_sure) / 60
             print(f"[BİLGİ] {bekleme_suresi} saniye bekleniyor... (Kalan çalışma süresi: {kalan_sure_dk:.1f} dakika)\n")
