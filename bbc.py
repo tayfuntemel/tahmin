@@ -18,7 +18,7 @@ CONFIG = {
     },
     "scraper": {
         "headless": True,
-        "timeout": 90000,
+        "timeout": 60000,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 }
@@ -129,6 +129,7 @@ class Scraper:
         self.playwright = None
         self.browser = None
         self.page = None
+        self.captured_data = {}  # url -> json
 
     def start(self):
         self.playwright = sync_playwright().start()
@@ -142,92 +143,53 @@ class Scraper:
             locale="tr-TR"
         )
         self.page = context.new_page()
+        # Ağ yanıtlarını dinle
+        self.page.on("response", self.handle_response)
+        # Ana sayfayı ziyaret et (çerezleri başlat)
         self.page.goto("https://www.sofascore.com/", timeout=self.cfg["timeout"])
         self.page.wait_for_timeout(3000)
 
+    def handle_response(self, response):
+        url = response.url
+        if "/api/v1/sport/football/scheduled-events/" in url:
+            try:
+                data = response.json()
+                self.captured_data[url] = data
+                print(f"[NETWORK] Yakalandı: {url.split('/')[-1]}")
+            except:
+                pass
+
     def get_matches_for_date(self, date_str: str) -> List[Dict]:
+        self.captured_data.clear()
+        # Tarih sayfasına git
         url = f"https://www.sofascore.com/tr/tarih/{date_str}"
         try:
             self.page.goto(url, timeout=self.cfg["timeout"])
         except:
             url = f"https://www.sofascore.com/tr/futbol/{date_str}"
             self.page.goto(url, timeout=self.cfg["timeout"])
-        self.page.wait_for_timeout(5000)
+        # Ağ isteklerinin tamamlanması için bekle
+        self.page.wait_for_load_state("networkidle", timeout=self.cfg["timeout"])
+        self.page.wait_for_timeout(3000)  # ekstra güvenlik
 
-        scripts = self.page.evaluate("""() => {
-            const results = [];
-            const scripts = document.querySelectorAll('script[type="application/json"]');
-            for (let s of scripts) {
-                try {
-                    const data = JSON.parse(s.innerText);
-                    results.push(data);
-                } catch(e) {}
-            }
-            return results;
-        }""")
-
-        for data in scripts:
-            events = self._extract_events_from_json(data)
-            if events:
-                return events
-
-        try:
-            nuxt = self.page.evaluate("() => window.__NUXT__")
-            if nuxt:
-                events = self._extract_events_from_json(nuxt)
-                if events:
-                    return events
-        except:
-            pass
+        # Yakalanan verilerden scheduled-events'i bul
+        for api_url, data in self.captured_data.items():
+            if "scheduled-events" in api_url and "events" in data:
+                return data["events"]
         return []
 
-    def _extract_events_from_json(self, data):
-        if isinstance(data, dict):
-            if "scheduledEvents" in data and isinstance(data["scheduledEvents"], list):
-                return data["scheduledEvents"]
-            if "events" in data and isinstance(data["events"], list):
-                return data["events"]
-            for v in data.values():
-                res = self._extract_events_from_json(v)
-                if res:
-                    return res
-        elif isinstance(data, list):
-            for item in data:
-                res = self._extract_events_from_json(item)
-                if res:
-                    return res
-        return None
-
     def get_odds(self, event_id: int) -> Dict[str, Any]:
+        self.captured_data.clear()
         url = f"https://www.sofascore.com/tr/mac/{event_id}"
         self.page.goto(url, timeout=self.cfg["timeout"])
-        self.page.wait_for_timeout(5000)
-
-        scripts = self.page.evaluate("""() => {
-            const results = [];
-            const scripts = document.querySelectorAll('script[type="application/json"]');
-            for (let s of scripts) {
-                try {
-                    const data = JSON.parse(s.innerText);
-                    results.push(data);
-                } catch(e) {}
-            }
-            return results;
-        }""")
+        self.page.wait_for_load_state("networkidle", timeout=self.cfg["timeout"])
+        self.page.wait_for_timeout(3000)
 
         odds_data = None
-        for data in scripts:
-            if "oddsMarketGroups" in str(data):
+        for api_url, data in self.captured_data.items():
+            if f"/event/{event_id}/odds/" in api_url:
                 odds_data = data
                 break
-        if not odds_data:
-            try:
-                nuxt = self.page.evaluate("() => window.__NUXT__")
-                if nuxt:
-                    odds_data = nuxt
-            except:
-                pass
-
         if not odds_data:
             return self._empty_odds()
         return self._parse_odds(odds_data)
@@ -247,14 +209,11 @@ class Scraper:
 
     def _parse_odds(self, data: dict) -> Dict[str, Any]:
         res = self._empty_odds()
-        market_groups = self._deep_search(data, "oddsMarketGroups")
-        if not market_groups:
-            return res
-
-        for group in market_groups:
-            market_name = group.get("marketName", "").lower()
-            choices = group.get("choices", [])
-            if "full time" in market_name or "1x2" in market_name:
+        markets = data.get("markets", [])
+        for m in markets:
+            m_name = m.get("marketName", "").lower()
+            choices = m.get("choices", [])
+            if "full time" in m_name or "1x2" in m_name:
                 for c in choices:
                     name = c.get("name", "").upper()
                     dec = c.get("decimalValue")
@@ -264,7 +223,7 @@ class Scraper:
                         res["odds_x"] = float(dec) if dec else None
                     elif name == "2":
                         res["odds_2"] = float(dec) if dec else None
-            elif "double chance" in market_name:
+            elif "double chance" in m_name:
                 for c in choices:
                     name = c.get("name", "").upper()
                     dec = c.get("decimalValue")
@@ -274,7 +233,7 @@ class Scraper:
                         res["odds_12"] = float(dec) if dec else None
                     elif name == "X2":
                         res["odds_x2"] = float(dec) if dec else None
-            elif "both teams to score" in market_name:
+            elif "both teams to score" in m_name:
                 for c in choices:
                     name = c.get("name", "").lower()
                     dec = c.get("decimalValue")
@@ -282,7 +241,7 @@ class Scraper:
                         res["odds_btts_yes"] = float(dec) if dec else None
                     elif name == "no":
                         res["odds_btts_no"] = float(dec) if dec else None
-            elif "over/under" in market_name or "goals" in market_name:
+            elif "goals" in m_name or "over/under" in m_name:
                 for c in choices:
                     line = c.get("line")
                     if not line:
@@ -309,21 +268,6 @@ class Scraper:
                         elif line == 6.5: res["odds_u65"] = val
                         elif line == 7.5: res["odds_u75"] = val
         return res
-
-    def _deep_search(self, obj, key):
-        if isinstance(obj, dict):
-            if key in obj:
-                return obj[key]
-            for v in obj.values():
-                res = self._deep_search(v, key)
-                if res is not None:
-                    return res
-        elif isinstance(obj, list):
-            for item in obj:
-                res = self._deep_search(item, key)
-                if res is not None:
-                    return res
-        return None
 
     def parse_match(self, ev: Dict) -> Dict[str, Any]:
         ts = ev.get("startTimestamp")
@@ -387,7 +331,7 @@ def main():
                 print(f"\n[TARAMA] {date_str} için maçlar alınıyor...")
                 events = sc.get_matches_for_date(date_str)
                 if not events:
-                    print(f"  {date_str} için maç bulunamadı.")
+                    print(f"  {date_str} için maç bulunamadı (API yanıtı yakalanamadı veya boş).")
                     continue
                 count = 0
                 for ev in events:
