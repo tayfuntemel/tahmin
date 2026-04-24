@@ -1,7 +1,6 @@
 name: Maclari Guncelle (Her 10 Dakikada Bir)
 
 # --- GLOBAL SEVİYE: KESİN ÇÖZÜM ---
-# Ayarı buraya koyarak Runner'ı henüz işe başlamadan Node.js 24 motoruna zorluyoruz.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 # -----------------------------------
@@ -11,7 +10,6 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
-# İŞTE BURASI ÇOK ÖNEMLİ (ÇAKIŞMA ÖNLEYİCİ)
 concurrency:
   group: maclari-guncelle-group
   cancel-in-progress: false
@@ -31,14 +29,14 @@ jobs:
       - name: Gerekli Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
-          pip install mysql-connector-python playwright
-          playwright install chromium
+          # DİKKAT: Playwright silindi, requests eklendi
+          pip install mysql-connector-python requests
 
       - name: Güncelleme Scriptini Çalıştır
-        env: # Şifrelerimizi koda aktarıyoruz
+        env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-        run: python maclari_guncelle.py
+        run: python maclari_guncelle122.py
