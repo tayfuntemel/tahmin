@@ -3,7 +3,7 @@ import os
 import datetime as dt, time, json
 import mysql.connector
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
 
 CONFIG = {
     "db": {
@@ -77,7 +77,6 @@ class DB:
         self.cur = None
 
     def connect(self):
-        # Eğer zaten bir bağlantı varsa kapatıp temizliyoruz
         if self.conn and self.conn.is_connected():
             self.cur.close()
             self.conn.close()
@@ -92,8 +91,18 @@ class DB:
             pass
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
+    # YENİ EKLENEN FONKSİYON: Biten maçları veritabanından çeker
+    def get_finished_event_ids(self) -> Set[int]:
+        try:
+            self.conn.ping(reconnect=True, attempts=3, delay=1)
+            # Sadece bitmiş maçların event_id'lerini alıyoruz
+            self.cur.execute("SELECT event_id FROM results_football WHERE status IN ('finished', 'ended')")
+            return set(row[0] for row in self.cur.fetchall())
+        except Exception as e:
+            print(f"[DB HATA] Biten maçlar alınırken hata oluştu: {e}")
+            return set()
+
     def upsert_match(self, row: Dict[str, Any]):
-        # EKLENEN KISIM: Veritabanı bağlantısı kopmuş mu diye kontrol et ve gerekiyorsa yeniden bağlan
         try:
             self.conn.ping(reconnect=True, attempts=3, delay=1)
         except mysql.connector.Error:
@@ -142,7 +151,6 @@ class DB:
 class Scraper:
     def __init__(self, cfg):
         self.cfg = cfg
-        # KENDİ SCRAPERAPI ANAHTARINI GITHUB SECRETS ÜZERİNDEN ALIYORUZ
         self.scraper_api_key = os.getenv("SCRAPER_API_KEY")
 
     def start(self):
@@ -161,7 +169,6 @@ class Scraper:
             }
             
             url_son_kisim = target_url.split('/')[-1]
-            # Sadece kritik istekleri ekrana basıp log kalabalığını önlüyoruz
             if len(url_son_kisim) > 15:
                 print(f"[İSTEK] ...{url_son_kisim[-15:]} -> ScraperAPI üzerinden isteniyor...")
             else:
@@ -288,6 +295,10 @@ def main():
     calisma_suresi = 9 * 60  # 9 dakika
     bekleme_suresi = 60      # Her tur arası 60 saniye
     
+    # YENİ EKLENEN KISIM: Zaten bitmiş ve veritabanına kaydedilmiş maçların ID'lerini alıyoruz.
+    finished_events_in_db = db.get_finished_event_ids()
+    print(f"[BİLGİ] Veritabanından {len(finished_events_in_db)} adet bitmiş maç önbelleğe alındı. Bunlar tekrar güncellenmeyecek.")
+    
     try:
         while True:
             tz_tr = dt.timezone(dt.timedelta(hours=3))
@@ -319,6 +330,10 @@ def main():
                         ev_id = ev.get("id")
                         status = (ev.get("status", {}).get("type") or "").lower()
                         
+                        # YENİ EKLENEN KISIM: Eğer maç bitmişse VE zaten veritabanımızda bitmiş olarak kayıtlıysa, bu maçı ATLA!
+                        if status in ["finished", "ended"] and ev_id in finished_events_in_db:
+                            continue
+                        
                         if status in ["inprogress", "finished", "ended"]:
                             extra_data = {
                                 "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
@@ -343,15 +358,19 @@ def main():
                             db.upsert_match(row)
                             p_count += 1
                             toplam_islenen += 1
+                            
+                            # YENİ EKLENEN KISIM: Yeni biten bir maçı kaydettiysek, onu önbelleğe ekleyelim ki bir sonraki döngüde tekrar API'ye sorulmasın.
+                            if status in ["finished", "ended"]:
+                                finished_events_in_db.add(ev_id)
                 
                 if p_count > 0:
                     print(f"[{time.strftime('%H:%M:%S')}] {date_str} -> {p_count} maç güncellendi.")
             
-            print(f"[{time.strftime('%H:%M:%S')}] Tur tamamlandı. Toplam {toplam_islenen} maç işlendi.")
+            print(f"[{time.strftime('%H:%M:%S')}] Tur tamamlandı. Toplam {toplam_islenen} yeni maç/istatistik işlendi.")
             
             gecen_sure = time.time() - baslangic_zamani
             if gecen_sure >= calisma_suresi:
-                print(f"\n[BİLGİ] {calisma_suresi/60} dakikalık çalışma süresi doldu. Github Actions Cron'un yeniden başlatması için güvenle kapanıyor...")
+                print(f"\n[BİLGİ] {calisma_suresi/60} dakikalık çalışma süresi doldu. Güvenle kapanıyor...")
                 break
             
             kalan_sure_dk = (calisma_suresi - gecen_sure) / 60
