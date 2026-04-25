@@ -1,23 +1,33 @@
-name: Daily Full Pipeline
+name: Daily Stats & Predictions Sirali
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   schedule:
-    # GitHub cron UTC çalışır. 21:40 UTC = Türkiye saati 00:40 civarıdır.
-    - cron: '40 21 * * *'
+    # maclari_guncelle.yml her 3 saatte bir 00:00, 03:00, 06:00... UTC çalışıyor.
+    # Bu workflow 01:30 UTC'de çalışır; yani 00:00 UTC güncellemesinden 1,5 saat sonra.
+    # Türkiye saatiyle 04:30'da çalışır.
+    - cron: '30 1 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: daily-full-pipeline
+  group: daily-stats-and-predict-sirali-group
   cancel-in-progress: false
 
-env:
-  PYTHONIOENCODING: utf-8
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
-  full-pipeline:
+  daily-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
+
+    env:
+      PYTHONIOENCODING: utf-8
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
 
     steps:
       - name: Depoyu Klonla
@@ -37,40 +47,17 @@ jobs:
           pip install mysql-connector-python requests
           pip list
 
-      - name: 1) Fikstürü Çek
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+      - name: 1 - Fikstür Çek
         run: python fikstur_cek122.py
 
-      - name: 2) Maçları Güncelle
+      - name: 2 - Maçları Güncelle
         env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+          WORK_MINUTES: 9
+          LOOP_WAIT_SECONDS: 60
         run: python maclari_guncelle122.py
 
-      - name: 3) İstatistik Tablolarını Güncelle
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
+      - name: 3 - İstatistik Tablolarını Güncelle
         run: python update_stats.py
 
-      - name: 4) Tahminleri Çalıştır
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
+      - name: 4 - Tahminleri Çalıştır
         run: python predict.py
