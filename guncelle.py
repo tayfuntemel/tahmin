@@ -2,10 +2,10 @@
 import os
 import datetime as dt
 import time
-import json
 import mysql.connector
 import requests
 from typing import Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CONFIG = {
     "db": {
@@ -16,17 +16,17 @@ CONFIG = {
         "port": int(os.getenv("DB_PORT", 3306))
     },
     "scraper": {
-        "sleep_between_requests": 0.2   # çok düşük, istekler arasında küçük bir nefes
+        "sleep_between_requests": 0   # ScraperAPI kendi throttling yapar
     }
 }
 
 MAJOR_TOURNAMENT_IDS = {
-    1, 2, 3, 72, 84, 36, 37, 3739, 33, 34, 7372, 42, 41, 8343, 810,
-    4, 5397, 62, 101, 39, 40, 38, 692, 280, 127, 83, 1449,
-    169352, 5071, 28, 6720, 18, 3397, 3708, 82, 3034, 3284, 6230,
-    54, 64, 29, 1060, 219, 652, 144, 1339, 1340, 1341, 5, 6, 12, 13, 19, 24, 27, 30, 31, 48, 49, 50, 52, 53, 55, 79, 102, 232, 384, 
-    681, 877, 1061, 1107, 1427, 10812, 16753, 19232, 34363, 51702, 52653, 58560, 
-    64475, 71900, 71901, 72112, 78740, 92016, 92614, 143625
+    1,2,3,72,84,36,37,3739,33,34,7372,42,41,8343,810,
+    4,5397,62,101,39,40,38,692,280,127,83,1449,
+    169352,5071,28,6720,18,3397,3708,82,3034,3284,6230,
+    54,64,29,1060,219,652,144,1339,1340,1341,5,6,12,13,19,24,27,30,31,48,49,50,52,53,55,79,102,232,384,
+    681,877,1061,1107,1427,10812,16753,19232,34363,51702,52653,58560,
+    64475,71900,71901,72112,78740,92016,92614,143625
 }
 
 SCHEMA_CREATE_TABLE = """
@@ -90,7 +90,7 @@ class DB:
             self.cur.execute("ALTER TABLE results_football ADD COLUMN match_year INT NULL, ADD COLUMN match_week INT NULL;")
         except mysql.connector.Error:
             pass
-        print(f"[DB] Bağlantı başarılı ve tablo hazır.")
+        print("[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
         try:
@@ -98,7 +98,6 @@ class DB:
         except mysql.connector.Error:
             print("[DB] Bağlantı koptu, yeniden bağlanılıyor...")
             self.connect()
-
         q = """
         INSERT INTO results_football
         (event_id, start_utc, start_time_utc, match_year, match_week, status, home_team, away_team,
@@ -115,8 +114,7 @@ class DB:
          %(referee)s, %(formation_h)s, %(formation_a)s,
          %(tournament_id)s, %(tournament_name)s, %(category_id)s, %(category_name)s, %(country)s)
         ON DUPLICATE KEY UPDATE
-          status = VALUES(status),
-          start_utc = VALUES(start_utc), start_time_utc = VALUES(start_time_utc),
+          status = VALUES(status), start_utc = VALUES(start_utc), start_time_utc = VALUES(start_time_utc),
           match_year = VALUES(match_year), match_week = VALUES(match_week),
           ht_home = VALUES(ht_home), ht_away = VALUES(ht_away),
           ft_home = VALUES(ft_home), ft_away = VALUES(ft_away),
@@ -145,10 +143,10 @@ class Scraper:
 
     def _fetch_json(self, target_url: str) -> dict:
         try:
-            time.sleep(self.cfg.get("sleep_between_requests", 0.2))
+            if self.cfg.get("sleep_between_requests", 0) > 0:
+                time.sleep(self.cfg["sleep_between_requests"])
             payload = {'api_key': self.scraper_api_key, 'url': target_url}
-            url_son = target_url.split('/')[-1]
-            print(f"[İSTEK] {url_son[:30]}... -> ScraperAPI")
+            url_son = target_url.split('/')[-1][:30]
             response = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
             if response.status_code == 200:
                 data = response.json()
@@ -157,7 +155,7 @@ class Scraper:
                     return {}
                 return data
             else:
-                print(f"[SCRAPERAPI HATASI] HTTP {response.status_code}")
+                print(f"[SCRAPERAPI HATASI] HTTP {response.status_code} - {url_son}")
                 return {}
         except Exception as e:
             print(f"[SİSTEM HATASI] {target_url} | {e}")
@@ -166,13 +164,11 @@ class Scraper:
     def get_detailed_stats(self, event_id) -> Dict[str, Any]:
         url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
         data = self._fetch_json(url)
-        res = {
-            "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None, 
-            "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
-            "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
-            "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
-            "tackles_h": None, "tackles_a": None
-        }
+        res = { "poss_h": None, "poss_a": None, "corn_h": None, "corn_a": None,
+                "shot_h": None, "shot_a": None, "shot_on_h": None, "shot_on_a": None,
+                "fouls_h": None, "fouls_a": None, "offsides_h": None, "offsides_a": None,
+                "saves_h": None, "saves_a": None, "passes_h": None, "passes_a": None,
+                "tackles_h": None, "tackles_a": None }
         if "statistics" not in data: return res
         all_period = data["statistics"][0]
         for group in all_period.get("groups", []):
@@ -199,13 +195,9 @@ class Scraper:
         return {"referee": ev.get("referee", {}).get("name")}
 
     def get_incidents_and_lineups(self, event_id) -> Dict[str, Any]:
-        res = {"formation_h": None, "formation_a": None}
-        lin_url = f"https://api.sofascore.com/api/v1/event/{event_id}/lineups"
-        lin_data = self._fetch_json(lin_url)
-        if lin_data:
-            res["formation_h"] = lin_data.get("home", {}).get("formation")
-            res["formation_a"] = lin_data.get("away", {}).get("formation")
-        return res
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/lineups"
+        data = self._fetch_json(url)
+        return {"formation_h": data.get("home", {}).get("formation"), "formation_a": data.get("away", {}).get("formation")}
 
     def by_date(self, date_str) -> List[Dict[str, Any]]:
         url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
@@ -221,14 +213,13 @@ class Scraper:
             match_year, match_week, _ = dt_tr.isocalendar()
         status = (ev.get("status", {}).get("type") or "").lower()
         hs, as_ = ev.get("homeScore", {}) or {}, ev.get("awayScore", {}) or {}
-        t = ev.get("tournament") or {}; u = ev.get("uniqueTournament") or {}
+        t, u = ev.get("tournament") or {}, ev.get("uniqueTournament") or {}
         cat = (t.get("category") or {}) if "category" in t else (u.get("category") or {})
         row = {
             "event_id": ev.get("id"),
             "start_utc": dt_tr.strftime("%Y-%m-%d") if dt_tr else None,
             "start_time_utc": dt_tr.strftime("%H:%M:%S") if dt_tr else None,
-            "match_year": match_year,
-            "match_week": match_week,
+            "match_year": match_year, "match_week": match_week,
             "status": status,
             "home_team": (ev.get("homeTeam") or {}).get("name"),
             "away_team": (ev.get("awayTeam") or {}).get("name"),
@@ -244,49 +235,54 @@ class Scraper:
         row.update(extra_data)
         return row
 
+def process_match(scraper, ev, db):
+    ev_id = ev.get("id")
+    status = (ev.get("status", {}).get("type") or "").lower()
+    if status not in ["inprogress", "finished", "ended"]:
+        return None
+    # Paralel olarak 3 isteği aynı anda yap (ama bu fonksiyon zaten thread içinde, istekleri sırayla yapabiliriz)
+    stats = scraper.get_detailed_stats(ev_id)
+    details = scraper.get_event_details(ev_id)
+    lineups = scraper.get_incidents_and_lineups(ev_id)
+    extra = {**stats, **details, **lineups}
+    row = scraper.parse(ev, extra)
+    db.upsert_match(row)
+    return ev_id
+
 def main():
     db = DB(CONFIG["db"])
     db.connect()
-    sc = Scraper(CONFIG["scraper"])
-    
+    scraper = Scraper(CONFIG["scraper"])
+
     tz_tr = dt.timezone(dt.timedelta(hours=3))
-    today_tr = dt.datetime.now(tz_tr).date()
-    # Sadece dün, bugün ve yarın (yarın henüz planlanmış maçlar için)
-    target_dates = [today_tr - dt.timedelta(days=1), today_tr, today_tr + dt.timedelta(days=1)]
-    target_dates_str = [d.strftime("%Y-%m-%d") for d in target_dates]
+    today = dt.datetime.now(tz_tr).date()
+    target_dates = [today - dt.timedelta(days=1), today, today + dt.timedelta(days=1)]
     
-    toplam_islenen = 0
-    
-    for date_str in target_dates_str:
-        events = sc.by_date(date_str)
-        p_count = 0
+    # Önce tüm maçları topla
+    all_matches = []
+    for date in target_dates:
+        date_str = date.strftime("%Y-%m-%d")
+        events = scraper.by_date(date_str)
         for ev in events:
             t_id = ev.get("tournament", {}).get("id")
             u_id = ev.get("uniqueTournament", {}).get("id")
-            if t_id not in MAJOR_TOURNAMENT_IDS and u_id not in MAJOR_TOURNAMENT_IDS:
-                continue
-            ev_id = ev.get("id")
-            status = (ev.get("status", {}).get("type") or "").lower()
-            if status not in ["inprogress", "finished", "ended"]:
-                continue
-            # Maçı işle
-            extra_data = {}
-            stats = sc.get_detailed_stats(ev_id)
-            extra_data.update(stats)
-            details = sc.get_event_details(ev_id)
-            extra_data.update(details)
-            lineups = sc.get_incidents_and_lineups(ev_id)
-            extra_data.update(lineups)
-            
-            row = sc.parse(ev, extra_data)
-            db.upsert_match(row)
-            p_count += 1
-            toplam_islenen += 1
-        if p_count > 0:
-            print(f"[{date_str}] {p_count} maç güncellendi.")
+            if t_id in MAJOR_TOURNAMENT_IDS or u_id in MAJOR_TOURNAMENT_IDS:
+                all_matches.append(ev)
     
-    print(f"Toplam {toplam_islenen} maç işlendi. Script tamamlandı.")
+    print(f"Toplam {len(all_matches)} aday maç bulundu, işleniyor...")
+    
+    # Thread ile paralel işle (max 5 thread)
+    processed = 0
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(process_match, scraper, ev, db): ev for ev in all_matches}
+        for future in as_completed(futures):
+            ev_id = future.result()
+            if ev_id:
+                processed += 1
+                print(f"[{processed}] Maç {ev_id} güncellendi.")
+    
     db.close()
+    print(f"Toplam {processed} maç güncellendi. Script tamamlandı.")
 
 if __name__ == "__main__":
     main()
