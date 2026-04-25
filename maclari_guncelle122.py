@@ -77,6 +77,11 @@ class DB:
         self.cur = None
 
     def connect(self):
+        # Eğer zaten bir bağlantı varsa kapatıp temizliyoruz
+        if self.conn and self.conn.is_connected():
+            self.cur.close()
+            self.conn.close()
+            
         self.conn = mysql.connector.connect(**self.cfg)
         self.conn.autocommit = True
         self.cur = self.conn.cursor()
@@ -88,6 +93,13 @@ class DB:
         print(f"[DB] Bağlantı başarılı ve tablo hazır.")
 
     def upsert_match(self, row: Dict[str, Any]):
+        # EKLENEN KISIM: Veritabanı bağlantısı kopmuş mu diye kontrol et ve gerekiyorsa yeniden bağlan
+        try:
+            self.conn.ping(reconnect=True, attempts=3, delay=1)
+        except mysql.connector.Error:
+            print("[DB] Bağlantı koptuğu tespit edildi, yeniden bağlanılıyor...")
+            self.connect()
+
         q = """
         INSERT INTO results_football
         (event_id, start_utc, start_time_utc, match_year, match_week, status, home_team, away_team,
