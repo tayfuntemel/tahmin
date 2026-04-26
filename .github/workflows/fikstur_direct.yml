@@ -1,0 +1,44 @@
+name: Fikstur Cek Direct
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  schedule:
+    - cron: '40 9,17,23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fikstur-cek-direct-group
+  cancel-in-progress: false
+
+jobs:
+  run-fikstur-direct-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Gerekli Kütüphaneleri Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install mysql-connector-python requests urllib3
+
+      - name: Fikstur Scriptini Direct Modda Calistir
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          FIXTURE_TABLE_NAME: sofascore_fixtures_direct
+          SLEEP_BETWEEN_REQUESTS: '1.5'
+          REQUEST_TIMEOUT: '60'
+          MAX_RETRIES: '3'
+          RETRY_WAIT_SECONDS: '20'
+        run: python fikstur_cek_direct.py
