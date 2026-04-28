@@ -5,8 +5,7 @@ env:
 
 on:
   schedule:
-    # Her gün 01:45 UTC / Türkiye saatiyle 04:45
-    - cron: '45 1 * * *'
+    - cron: "0 23 * * *"
   workflow_dispatch:
 
 concurrency:
