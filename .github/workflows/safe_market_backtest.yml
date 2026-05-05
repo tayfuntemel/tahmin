@@ -1,252 +1,178 @@
-# SAFE MARKET BACKTEST AYAR DOSYASI
-# Bu dosya sadece backtest Python dosyasını tetikler/ayarlar.
-# Fikstur_cek.py ve maclari_guncelle.py dosyalarına ihtiyaç duymaz; mevcut results_football tablosunu okur.
+# SAFE MARKET BACKTEST V1 AYARLARI
+# Bu dosya safe_market_backtest_v1.py ile aynı klasörde durmalı.
 
+# DB bilgilerini istersen direkt yaz, istersen ortam değişkeninden okut.
 database:
-  host: "${DB_HOST:localhost}"
-  user: "${DB_USER:root}"
-  password: "${DB_PASSWORD:}"
-  name: "${DB_NAME:nesine}"
-  port: "${DB_PORT:3306}"
+  host: "${DB_HOST}"
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  name: "${DB_NAME}"
+  port: 3306
+
+  # Mevcut maç/veri tablon.
+  source_table: "results_football"
+
+  # Backtest sonuçlarının yazılacağı yeni tablo.
+  result_table: "safe_market_backtest_results"
 
 backtest:
-  run_id: "safe_market_v1"
+  # Komuttan --start / --end verirsen bunların üstüne yazar.
   start_date: "2026-02-04"
   end_date: "2026-05-04"
+
+  # Her maç için maç tarihinden önce kaç günlük veri kullanılacak.
   lookback_days: 500
-  cutoff_days_before_match: 1
-  clear_existing_run: true
 
-output:
-  table: "safe_market_backtest_results"
-
-league_filter:
-  # Boş bırakırsan tüm ligleri backtest eder.
-  # Aşağıdaki liste mevcut sistemindeki ana turnuva/kategori listesiyle uyumludur.
-  major_tournament_ids:
-    - 1
-    - 2
-    - 3
-    - 4
-    - 5
-    - 6
-    - 12
-    - 13
-    - 18
-    - 19
-    - 24
-    - 27
-    - 28
-    - 29
-    - 30
-    - 31
-    - 33
-    - 34
-    - 36
-    - 37
-    - 38
-    - 39
-    - 40
-    - 41
-    - 42
-    - 48
-    - 49
-    - 50
-    - 52
-    - 53
-    - 54
-    - 55
-    - 62
-    - 64
-    - 72
-    - 79
-    - 82
-    - 83
-    - 84
-    - 101
-    - 102
-    - 127
-    - 144
-    - 219
-    - 232
-    - 280
-    - 384
-    - 652
-    - 681
-    - 692
-    - 810
-    - 877
-    - 1060
-    - 1061
-    - 1107
-    - 1339
-    - 1340
-    - 1341
-    - 1427
-    - 1449
-    - 3034
-    - 3284
-    - 3397
-    - 3708
-    - 3739
-    - 5071
-    - 5397
-    - 6230
-    - 6720
-    - 7372
-    - 8343
-    - 10812
-    - 16753
-    - 19232
-    - 34363
-    - 51702
-    - 52653
-    - 58560
-    - 64475
-    - 71900
-    - 71901
-    - 72112
-    - 78740
-    - 92016
-    - 92614
-    - 143625
-    - 169352
-
-model:
-  weights:
-    league: 0.40
-    home_team: 0.22
-    away_team: 0.22
-    h2h: 0.16
-
-risk:
-  # Yüksek bahis profili: az maç, sert eleme.
-  max_daily_picks: 3
-
-  min_league_sample: 45
-  min_team_sample: 8
-  min_total_sample: 70
-  min_h2h_sample_for_weight: 3
-  shrink_until_sample: 180
-
-  min_model_probability: 74.0
-  min_edge: 1.50
-  min_confidence: 78.0
-  max_risk_score: 24.0
-
-  disagreement_penalty_multiplier: 0.55
-  market_risk_multiplier: 4.0
-  edge_confidence_multiplier: 0.20
+  # Aynı tarih aralığındaki eski sonuçları silip baştan yazar.
+  clear_before_run: true
 
 markets:
-  # En güvenli düşük varyanslı marketler üstte.
-  - code: "O05"
+  # Motor marketleri bu sırayla değerlendirir.
+  # Ama seçim sadece sıraya göre değil; confidence + edge + risk skoruna göre yapılır.
+  enabled:
+    - "O05"
+    - "O15"
+    - "U45"
+    - "U35"
+    - "U55"
+    - "DC_1X"
+    - "DC_X2"
+    - "DC_12"
+    - "BTTS_NO"
+    - "BTTS_YES"
+    - "U25"
+    - "O25"
+
+thresholds:
+  # Yüksek bahis modu: az maç, sert eşik.
+  max_daily_picks: 3
+
+  # Model olasılığı minimum yüzde.
+  min_model_prob: 80.0
+
+  # Model olasılığı - oranın ima ettiği olasılık.
+  # Örn: model 84, oran implied 78 ise edge 6'dır.
+  min_edge: 2.5
+
+  # Nihai güven skoru.
+  min_confidence: 82.0
+
+  # Risk skoru bundan yüksekse NO_BET.
+  max_risk_score: 28.0
+
+  # Lig geçmiş örneği azsa NO_BET.
+  min_league_sample: 30
+
+  # Ev + deplasman toplam geçmiş örneği azsa NO_BET.
+  min_team_total_sample: 16
+
+scoring:
+  # Veri yokken kullanılan temkinli varsayım.
+  global_prior: 0.62
+
+  # Olasılık ağırlıkları.
+  league_weight: 0.42
+  home_weight: 0.22
+  away_weight: 0.22
+  h2h_weight: 0.14
+
+  # Bu sample üstünde tam ağırlığa yaklaşır.
+  min_sample_for_full_weight: 40
+
+  # Toplam sample skoru için hedef.
+  min_total_sample: 80
+
+  # Edge güven skoruna ne kadar etki etsin.
+  edge_confidence_multiplier: 85.0
+
+  # Sample güven skoruna ne kadar etki etsin.
+  sample_confidence_multiplier: 0.08
+
+risk:
+  # Oran 1.30 üstüne çıktıkça risk eklenir.
+  odds_risk_multiplier: 18.0
+
+  # Lig gol oynaklığı yüksekse risk eklenir.
+  volatility_risk_multiplier: 7.0
+
+  # H2H yoksa küçük ceza.
+  no_h2h_penalty: 3.0
+
+  # Takım datası azsa ceza.
+  low_team_sample_limit: 8
+  low_team_sample_penalty: 5.0
+
+# Market bazlı özel limitler.
+# İstersen buradan oran aralıklarını ve risk ağırlığını oynarsın.
+market_limits:
+  O05:
     label: "0.5 ÜST"
-    odds_column: "odds_o05"
-    enabled: true
-    min_odds: 1.03
-    max_odds: 1.35
-    min_probability: 0.88
-    min_edge: 0.80
-    risk_weight: 0.30
+    min_odds: 1.01
+    max_odds: 1.25
+    risk_weight: 2.0
 
-  - code: "O15"
+  O15:
     label: "1.5 ÜST"
-    odds_column: "odds_o15"
-    enabled: true
     min_odds: 1.12
-    max_odds: 1.60
-    min_probability: 0.78
-    min_edge: 1.20
-    risk_weight: 0.55
+    max_odds: 1.55
+    risk_weight: 7.0
 
-  - code: "U45"
-    label: "4.5 ALT"
-    odds_column: "odds_u45"
-    enabled: true
-    min_odds: 1.08
-    max_odds: 1.50
-    min_probability: 0.82
-    min_edge: 1.00
-    risk_weight: 0.45
-
-  - code: "U55"
-    label: "5.5 ALT"
-    odds_column: "odds_u55"
-    enabled: true
-    min_odds: 1.03
-    max_odds: 1.35
-    min_probability: 0.88
-    min_edge: 0.80
-    risk_weight: 0.30
-
-  - code: "U35"
+  U35:
     label: "3.5 ALT"
-    odds_column: "odds_u35"
-    enabled: true
-    min_odds: 1.18
-    max_odds: 1.75
-    min_probability: 0.74
-    min_edge: 1.50
-    risk_weight: 0.75
+    min_odds: 1.12
+    max_odds: 1.65
+    risk_weight: 9.0
 
-  - code: "DC_1X"
+  U45:
+    label: "4.5 ALT"
+    min_odds: 1.05
+    max_odds: 1.38
+    risk_weight: 5.0
+
+  U55:
+    label: "5.5 ALT"
+    min_odds: 1.01
+    max_odds: 1.22
+    risk_weight: 3.0
+
+  DC_1X:
     label: "1X"
-    odds_column: "odds_1x"
-    enabled: true
     min_odds: 1.08
     max_odds: 1.55
-    min_probability: 0.78
-    min_edge: 1.20
-    risk_weight: 0.70
+    risk_weight: 8.0
 
-  - code: "DC_X2"
+  DC_X2:
     label: "X2"
-    odds_column: "odds_x2"
-    enabled: true
+    min_odds: 1.08
+    max_odds: 1.55
+    risk_weight: 8.0
+
+  DC_12:
+    label: "12"
     min_odds: 1.08
     max_odds: 1.65
-    min_probability: 0.77
-    min_edge: 1.40
-    risk_weight: 0.80
+    risk_weight: 10.0
 
-  - code: "DC_12"
-    label: "12"
-    odds_column: "odds_12"
-    enabled: true
-    min_odds: 1.08
-    max_odds: 1.55
-    min_probability: 0.78
-    min_edge: 1.20
-    risk_weight: 0.80
-
-  - code: "BTTS_NO"
+  BTTS_NO:
     label: "KG YOK"
-    odds_column: "odds_btts_no"
-    enabled: true
     min_odds: 1.25
-    max_odds: 1.90
-    min_probability: 0.70
-    min_edge: 2.00
-    risk_weight: 1.10
+    max_odds: 1.95
+    risk_weight: 13.0
 
-  # Daha oynak marketler. Varsayılan açık ama sert risk cezası var.
-  - code: "BTTS_YES"
+  BTTS_YES:
     label: "KG VAR"
-    odds_column: "odds_btts_yes"
-    enabled: true
     min_odds: 1.35
-    max_odds: 1.95
-    min_probability: 0.68
-    min_edge: 2.50
-    risk_weight: 1.35
+    max_odds: 2.05
+    risk_weight: 16.0
 
-  - code: "O25"
+  U25:
+    label: "2.5 ALT"
+    min_odds: 1.30
+    max_odds: 2.05
+    risk_weight: 15.0
+
+  O25:
     label: "2.5 ÜST"
-    odds_column: "odds_o25"
-    enabled: true
     min_odds: 1.35
-    max_odds: 1.95
-    min_probability: 0.68
-    min_edge: 2.50
-    risk_weight: 1.45
+    max_odds: 2.10
+    risk_weight: 18.0
