@@ -1,23 +1,23 @@
-name: 03 - Safe Market Backtest
+name: Safe Market Backtest
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
-  schedule:
-    # Türkiye saati 04:00 için UTC 01:00
-    - cron: "0 1 * * *"
-
   workflow_dispatch:
     inputs:
       start_date:
         description: "Backtest başlangıç tarihi. Örnek: 2026-04-15"
         required: false
-        default: ""
+        default: "2026-04-15"
       end_date:
         description: "Backtest bitiş tarihi. Örnek: 2026-05-04"
         required: false
-        default: ""
+        default: "2026-05-04"
+
+  schedule:
+    # Türkiye saati 04:00 = UTC 01:00
+    - cron: "0 1 * * *"
 
 concurrency:
   group: safe-market-backtest-group
@@ -48,14 +48,106 @@ jobs:
       - name: Gerekli Kütüphaneleri Yükle
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
           python -m pip install PyYAML mysql-connector-python
-          python -m pip show PyYAML
-          python -m pip show mysql-connector-python
           python - <<'PY'
           import yaml
           import mysql.connector
           print("PyYAML ve mysql-connector-python hazır.")
           PY
+
+      - name: Config Dosyasını Oluştur
+        run: |
+          mkdir -p config
+          cat > config/safe_market_backtest.yml <<'YAML'
+          app:
+            name: "Safe Market Backtest"
+            timezone: "Europe/Istanbul"
+
+          database:
+            host_env: "DB_HOST"
+            user_env: "DB_USER"
+            password_env: "DB_PASSWORD"
+            name_env: "DB_NAME"
+            port_env: "DB_PORT"
+            charset: "utf8mb4"
+            collation: "utf8mb4_unicode_ci"
+
+          backtest:
+            default_start_date: "2026-04-15"
+            default_end_date: "2026-05-04"
+            history_lookback_days: 500
+            clear_existing_results: true
+
+          tables:
+            source_table: "results_football"
+            result_table: "safe_market_backtest_results"
+
+          filters:
+            min_league_sample: 40
+            min_team_sample: 6
+            min_h2h_sample_for_bonus: 2
+            max_daily_picks: 3
+
+          risk:
+            min_final_confidence: 84.0
+            min_model_probability: 78.0
+            min_edge: 2.0
+            max_risk_score: 28.0
+            min_sample_score: 45.0
+
+          odds:
+            min_odds: 1.10
+            max_odds: 1.65
+
+          markets:
+            enabled:
+              - "OVER_05"
+              - "OVER_15"
+              - "UNDER_35"
+              - "UNDER_45"
+              - "UNDER_55"
+              - "DC_1X"
+              - "DC_X2"
+              - "DC_12"
+              - "BTTS_NO"
+              - "BTTS_YES"
+              - "OVER_25"
+
+            priority:
+              OVER_05: 100
+              OVER_15: 95
+              UNDER_45: 90
+              UNDER_35: 86
+              UNDER_55: 82
+              DC_1X: 78
+              DC_X2: 76
+              DC_12: 72
+              BTTS_NO: 68
+              BTTS_YES: 62
+              OVER_25: 55
+
+            risk_penalty:
+              OVER_05: 4
+              OVER_15: 8
+              UNDER_45: 9
+              UNDER_35: 13
+              UNDER_55: 10
+              DC_1X: 12
+              DC_X2: 14
+              DC_12: 16
+              BTTS_NO: 18
+              BTTS_YES: 22
+              OVER_25: 26
+
+          output:
+            print_summary: true
+            print_daily_details: true
+          YAML
+
+          echo "Config oluşturuldu:"
+          ls -la config
+          cat config/safe_market_backtest.yml
 
       - name: Safe Market Backtest Çalıştır
         run: |
