@@ -1,178 +1,63 @@
-# SAFE MARKET BACKTEST V1 AYARLARI
-# Bu dosya safe_market_backtest_v1.py ile aynı klasörde durmalı.
+name: 03 - Safe Market Backtest
 
-# DB bilgilerini istersen direkt yaz, istersen ortam değişkeninden okut.
-database:
-  host: "${DB_HOST}"
-  user: "${DB_USER}"
-  password: "${DB_PASSWORD}"
-  name: "${DB_NAME}"
-  port: 3306
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-  # Mevcut maç/veri tablon.
-  source_table: "results_football"
+on:
+  schedule:
+    # Türkiye saati 04:00 için UTC 01:00
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Backtest başlangıç tarihi. Örnek: 2026-02-04"
+        required: false
+        default: ""
+      end_date:
+        description: "Backtest bitiş tarihi. Örnek: 2026-05-04"
+        required: false
+        default: ""
 
-  # Backtest sonuçlarının yazılacağı yeni tablo.
-  result_table: "safe_market_backtest_results"
+concurrency:
+  group: safe-market-backtest-group
+  cancel-in-progress: false
 
-backtest:
-  # Komuttan --start / --end verirsen bunların üstüne yazar.
-  start_date: "2026-02-04"
-  end_date: "2026-05-04"
+jobs:
+  safe-market-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
 
-  # Her maç için maç tarihinden önce kaç günlük veri kullanılacak.
-  lookback_days: 500
+    env:
+      PYTHONIOENCODING: utf-8
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_PORT: ${{ secrets.DB_PORT }}
 
-  # Aynı tarih aralığındaki eski sonuçları silip baştan yazar.
-  clear_before_run: true
+    steps:
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
 
-markets:
-  # Motor marketleri bu sırayla değerlendirir.
-  # Ama seçim sadece sıraya göre değil; confidence + edge + risk skoruna göre yapılır.
-  enabled:
-    - "O05"
-    - "O15"
-    - "U45"
-    - "U35"
-    - "U55"
-    - "DC_1X"
-    - "DC_X2"
-    - "DC_12"
-    - "BTTS_NO"
-    - "BTTS_YES"
-    - "U25"
-    - "O25"
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
 
-thresholds:
-  # Yüksek bahis modu: az maç, sert eşik.
-  max_daily_picks: 3
+      - name: Gerekli Kütüphaneleri Yükle
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install mysql-connector-python pyyaml
+          fi
+          pip list
 
-  # Model olasılığı minimum yüzde.
-  min_model_prob: 80.0
-
-  # Model olasılığı - oranın ima ettiği olasılık.
-  # Örn: model 84, oran implied 78 ise edge 6'dır.
-  min_edge: 2.5
-
-  # Nihai güven skoru.
-  min_confidence: 82.0
-
-  # Risk skoru bundan yüksekse NO_BET.
-  max_risk_score: 28.0
-
-  # Lig geçmiş örneği azsa NO_BET.
-  min_league_sample: 30
-
-  # Ev + deplasman toplam geçmiş örneği azsa NO_BET.
-  min_team_total_sample: 16
-
-scoring:
-  # Veri yokken kullanılan temkinli varsayım.
-  global_prior: 0.62
-
-  # Olasılık ağırlıkları.
-  league_weight: 0.42
-  home_weight: 0.22
-  away_weight: 0.22
-  h2h_weight: 0.14
-
-  # Bu sample üstünde tam ağırlığa yaklaşır.
-  min_sample_for_full_weight: 40
-
-  # Toplam sample skoru için hedef.
-  min_total_sample: 80
-
-  # Edge güven skoruna ne kadar etki etsin.
-  edge_confidence_multiplier: 85.0
-
-  # Sample güven skoruna ne kadar etki etsin.
-  sample_confidence_multiplier: 0.08
-
-risk:
-  # Oran 1.30 üstüne çıktıkça risk eklenir.
-  odds_risk_multiplier: 18.0
-
-  # Lig gol oynaklığı yüksekse risk eklenir.
-  volatility_risk_multiplier: 7.0
-
-  # H2H yoksa küçük ceza.
-  no_h2h_penalty: 3.0
-
-  # Takım datası azsa ceza.
-  low_team_sample_limit: 8
-  low_team_sample_penalty: 5.0
-
-# Market bazlı özel limitler.
-# İstersen buradan oran aralıklarını ve risk ağırlığını oynarsın.
-market_limits:
-  O05:
-    label: "0.5 ÜST"
-    min_odds: 1.01
-    max_odds: 1.25
-    risk_weight: 2.0
-
-  O15:
-    label: "1.5 ÜST"
-    min_odds: 1.12
-    max_odds: 1.55
-    risk_weight: 7.0
-
-  U35:
-    label: "3.5 ALT"
-    min_odds: 1.12
-    max_odds: 1.65
-    risk_weight: 9.0
-
-  U45:
-    label: "4.5 ALT"
-    min_odds: 1.05
-    max_odds: 1.38
-    risk_weight: 5.0
-
-  U55:
-    label: "5.5 ALT"
-    min_odds: 1.01
-    max_odds: 1.22
-    risk_weight: 3.0
-
-  DC_1X:
-    label: "1X"
-    min_odds: 1.08
-    max_odds: 1.55
-    risk_weight: 8.0
-
-  DC_X2:
-    label: "X2"
-    min_odds: 1.08
-    max_odds: 1.55
-    risk_weight: 8.0
-
-  DC_12:
-    label: "12"
-    min_odds: 1.08
-    max_odds: 1.65
-    risk_weight: 10.0
-
-  BTTS_NO:
-    label: "KG YOK"
-    min_odds: 1.25
-    max_odds: 1.95
-    risk_weight: 13.0
-
-  BTTS_YES:
-    label: "KG VAR"
-    min_odds: 1.35
-    max_odds: 2.05
-    risk_weight: 16.0
-
-  U25:
-    label: "2.5 ALT"
-    min_odds: 1.30
-    max_odds: 2.05
-    risk_weight: 15.0
-
-  O25:
-    label: "2.5 ÜST"
-    min_odds: 1.35
-    max_odds: 2.10
-    risk_weight: 18.0
+      - name: Safe Market Backtest Çalıştır
+        run: |
+          if [ -n "${{ github.event.inputs.start_date }}" ] && [ -n "${{ github.event.inputs.end_date }}" ]; then
+            python safe_market_backtest.py --config config/safe_market_backtest.yml --start "${{ github.event.inputs.start_date }}" --end "${{ github.event.inputs.end_date }}"
+          else
+            python safe_market_backtest.py --config config/safe_market_backtest.yml
+          fi
