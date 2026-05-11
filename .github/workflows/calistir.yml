@@ -1,0 +1,58 @@
+name: 02 Generate Football Predictions
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Türkiye saatiyle yaklaşık her gün 09:00
+    # GitHub cron UTC çalışır. 06:00 UTC = 09:00 TR
+    - cron: "0 6 * * *"
+
+    # Türkiye saatiyle yaklaşık her gün 13:00
+    - cron: "0 10 * * *"
+
+    # Türkiye saatiyle yaklaşık her gün 17:00
+    - cron: "0 14 * * *"
+
+    # Türkiye saatiyle yaklaşık her gün 21:00
+    - cron: "0 18 * * *"
+
+jobs:
+  generate-predictions:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+
+      LOOKBACK_DAYS: "550"
+      TARGET_DAYS_AHEAD: "1"
+      MIN_TEAM_MATCHES: "5"
+      MIN_LEAGUE_MATCHES: "10"
+      MIN_CONFIDENCE: "0.68"
+      MODEL_VERSION: "v1_stat_signal_no_odds_single_file"
+
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mysql-connector-python
+
+      - name: Run prediction generator
+        run: |
+          python generate_predictions.py
