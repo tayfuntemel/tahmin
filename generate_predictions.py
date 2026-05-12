@@ -23,6 +23,9 @@ Kullanmaz:
 - odds kolonları
 - stake market isimleri
 - şut/faul/kart marketleri
+
+Bu sürümde korner marketlerine limit yoktur.
+Kornerlerin seçilmesi zorlaştırılmış, diğer özel marketlerin sinyal ağırlığı artırılmıştır.
 """
 
 import os
@@ -36,7 +39,7 @@ import mysql.connector
 # CONFIG
 # ============================================================
 
-MODEL_VERSION = os.getenv("MODEL_VERSION", "v4_custom_halves_corners_no_odds")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v5_custom_halves_goalrange_corners_balanced_no_odds")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -51,7 +54,7 @@ TARGET_DAYS_AHEAD = int(os.getenv("TARGET_DAYS_AHEAD", "1"))
 
 MIN_TEAM_MATCHES = int(os.getenv("MIN_TEAM_MATCHES", "5"))
 MIN_LEAGUE_MATCHES = int(os.getenv("MIN_LEAGUE_MATCHES", "10"))
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.60"))
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.58"))
 
 MAX_TEAM_PROFILE_MATCHES = int(os.getenv("MAX_TEAM_PROFILE_MATCHES", "20"))
 
@@ -77,7 +80,6 @@ MARKET_MAP = {
         "selection_key": "yes",
         "selection_name": "Evet",
     },
-
     "home_scores_both_halves": {
         "market_type": "team_halves_goal",
         "selection": "home_scores_both_halves",
@@ -94,7 +96,6 @@ MARKET_MAP = {
         "selection_key": "yes",
         "selection_name": "Evet",
     },
-
     "home_wins_both_halves": {
         "market_type": "team_halves_result",
         "selection": "home_wins_both_halves",
@@ -111,7 +112,6 @@ MARKET_MAP = {
         "selection_key": "yes",
         "selection_name": "Evet",
     },
-
     "total_goals_0_1": {
         "market_type": "goal_range",
         "selection": "total_goals_0_1",
@@ -144,7 +144,6 @@ MARKET_MAP = {
         "selection_key": "6_plus",
         "selection_name": "6+",
     },
-
     "both_halves_over_1_5": {
         "market_type": "both_halves_goals",
         "selection": "both_halves_over_1_5",
@@ -161,7 +160,6 @@ MARKET_MAP = {
         "selection_key": "under_1_5",
         "selection_name": "Evet",
     },
-
     "corners_over_7_5": {
         "market_type": "corners",
         "selection": "corners_over_7_5",
@@ -205,29 +203,42 @@ MARKET_MAP = {
 }
 
 
+# Korner limiti yok. Bunun yerine skor dengesi var.
+# Pozitif: seçilme şansı artar.
+# Negatif: seçilme şansı azalır.
 MARKET_PRIORITY_BONUS = {
-    "first_half_btts_yes": 0.010,
-    "second_half_btts_yes": 0.015,
+    "first_half_btts_yes": 0.045,
+    "second_half_btts_yes": 0.050,
 
-    "home_scores_both_halves": 0.020,
-    "away_scores_both_halves": 0.020,
+    "home_scores_both_halves": 0.050,
+    "away_scores_both_halves": 0.050,
 
-    "home_wins_both_halves": 0.025,
-    "away_wins_both_halves": 0.025,
+    "home_wins_both_halves": 0.060,
+    "away_wins_both_halves": 0.060,
 
-    "total_goals_0_1": 0.005,
-    "total_goals_2_3": 0.010,
-    "total_goals_4_5": 0.015,
-    "total_goals_6_plus": 0.020,
+    "total_goals_0_1": 0.020,
+    "total_goals_2_3": 0.040,
+    "total_goals_4_5": 0.050,
+    "total_goals_6_plus": 0.060,
 
-    "both_halves_over_1_5": 0.020,
-    "both_halves_under_1_5": 0.005,
+    "both_halves_over_1_5": 0.060,
+    "both_halves_under_1_5": 0.020,
 
-    "corners_over_7_5": 0.000,
-    "corners_over_8_5": 0.010,
-    "corners_over_9_5": 0.015,
-    "corners_under_10_5": 0.000,
-    "corners_under_11_5": 0.000,
+    "corners_over_7_5": -0.055,
+    "corners_over_8_5": -0.050,
+    "corners_over_9_5": -0.045,
+    "corners_under_10_5": -0.060,
+    "corners_under_11_5": -0.065,
+}
+
+
+MARKET_TYPE_ADJUSTMENT = {
+    "half_btts": 0.025,
+    "team_halves_goal": 0.030,
+    "team_halves_result": 0.040,
+    "goal_range": 0.025,
+    "both_halves_goals": 0.030,
+    "corners": -0.055,
 }
 
 
@@ -325,7 +336,7 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 def confidence_label(score: float) -> str:
     if score >= 0.74:
         return "high"
-    if score >= 0.60:
+    if score >= 0.58:
         return "medium"
     return "low"
 
@@ -913,14 +924,14 @@ def sample_quality(features: Dict[str, Any], market_family: str) -> float:
     league_corner_n = int(features["league"]["corner_sample_size"])
 
     if market_family == "corners":
-        team_part = min(home_corner_n, away_corner_n) / 10.0
-        league_part = league_corner_n / 40.0
+        team_part = min(home_corner_n, away_corner_n) / 14.0
+        league_part = league_corner_n / 70.0
     elif market_family in {"half_btts", "team_halves_goal", "team_halves_result", "both_halves_goals"}:
-        team_part = min(home_half_n, away_half_n) / 10.0
-        league_part = league_half_n / 40.0
+        team_part = min(home_half_n, away_half_n) / 8.0
+        league_part = league_half_n / 30.0
     else:
-        team_part = min(home_n, away_n) / 10.0
-        league_part = league_n / 50.0
+        team_part = min(home_n, away_n) / 8.0
+        league_part = league_n / 35.0
 
     return clamp((team_part * 0.70) + (league_part * 0.30))
 
@@ -935,8 +946,18 @@ def make_candidate(
     meta = MARKET_MAP[code]
 
     quality = sample_quality(features, meta["market_type"])
-    final_score = clamp((raw_score * 0.86) + (quality * 0.14))
-    selection_score = clamp(final_score + MARKET_PRIORITY_BONUS.get(code, 0.0))
+
+    # Kornerler daha stabil veri verdiği için burada final skorda daha az örneklem desteği alıyor.
+    if meta["market_type"] == "corners":
+        final_score = clamp((raw_score * 0.90) + (quality * 0.10))
+    else:
+        final_score = clamp((raw_score * 0.84) + (quality * 0.16))
+
+    selection_score = clamp(
+        final_score
+        + MARKET_PRIORITY_BONUS.get(code, 0.0)
+        + MARKET_TYPE_ADJUSTMENT.get(meta["market_type"], 0.0)
+    )
 
     return {
         "event_id": fixture["event_id"],
@@ -980,12 +1001,12 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # 1. yarı KG
     raw = (
-        val(h["scores_first_half_rate"], 0.35) * 0.18
-        + val(a["scores_first_half_rate"], 0.30) * 0.18
-        + val(h["concedes_first_half_rate"], 0.35) * 0.14
-        + val(a["concedes_first_half_rate"], 0.35) * 0.14
-        + val(l["first_half_btts_rate"], 0.22) * 0.16
-        + min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.7, 1.0) * 0.20
+        val(h["scores_first_half_rate"], 0.35) * 0.22
+        + val(a["scores_first_half_rate"], 0.30) * 0.22
+        + val(h["concedes_first_half_rate"], 0.35) * 0.16
+        + val(a["concedes_first_half_rate"], 0.35) * 0.16
+        + val(l["first_half_btts_rate"], 0.22) * 0.10
+        + min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.55, 1.0) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -996,12 +1017,12 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # 2. yarı KG
     raw = (
-        val(h["scores_second_half_rate"], 0.40) * 0.18
-        + val(a["scores_second_half_rate"], 0.35) * 0.18
-        + val(h["concedes_second_half_rate"], 0.40) * 0.14
-        + val(a["concedes_second_half_rate"], 0.40) * 0.14
-        + val(l["second_half_btts_rate"], 0.25) * 0.16
-        + min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 1.9, 1.0) * 0.20
+        val(h["scores_second_half_rate"], 0.40) * 0.22
+        + val(a["scores_second_half_rate"], 0.35) * 0.22
+        + val(h["concedes_second_half_rate"], 0.40) * 0.16
+        + val(a["concedes_second_half_rate"], 0.40) * 0.16
+        + val(l["second_half_btts_rate"], 0.25) * 0.10
+        + min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 1.70, 1.0) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -1012,11 +1033,11 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Ev sahibi iki yarıda da gol
     raw = (
-        val(h["scores_both_halves_rate"], 0.22) * 0.30
-        + val(a["concedes_both_halves_rate"], 0.18) * 0.22
-        + min(val(h["goals_for_avg"], 1.35) / 2.8, 1.0) * 0.18
-        + min(val(a["goals_against_avg"], 1.25) / 2.6, 1.0) * 0.16
-        + min((val(h["ht_for_avg"], 0.45) + val(h["sh_for_avg"], 0.55)) / 1.8, 1.0) * 0.14
+        val(h["scores_both_halves_rate"], 0.22) * 0.36
+        + val(a["concedes_both_halves_rate"], 0.18) * 0.24
+        + min(val(h["goals_for_avg"], 1.35) / 2.50, 1.0) * 0.16
+        + min(val(a["goals_against_avg"], 1.25) / 2.35, 1.0) * 0.14
+        + min((val(h["ht_for_avg"], 0.45) + val(h["sh_for_avg"], 0.55)) / 1.55, 1.0) * 0.10
     )
     candidates.append(make_candidate(
         features,
@@ -1027,11 +1048,11 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Deplasman iki yarıda da gol
     raw = (
-        val(a["scores_both_halves_rate"], 0.18) * 0.30
-        + val(h["concedes_both_halves_rate"], 0.18) * 0.22
-        + min(val(a["goals_for_avg"], 1.20) / 2.8, 1.0) * 0.18
-        + min(val(h["goals_against_avg"], 1.20) / 2.6, 1.0) * 0.16
-        + min((val(a["ht_for_avg"], 0.40) + val(a["sh_for_avg"], 0.50)) / 1.8, 1.0) * 0.14
+        val(a["scores_both_halves_rate"], 0.18) * 0.36
+        + val(h["concedes_both_halves_rate"], 0.18) * 0.24
+        + min(val(a["goals_for_avg"], 1.20) / 2.50, 1.0) * 0.16
+        + min(val(h["goals_against_avg"], 1.20) / 2.35, 1.0) * 0.14
+        + min((val(a["ht_for_avg"], 0.40) + val(a["sh_for_avg"], 0.50)) / 1.55, 1.0) * 0.10
     )
     candidates.append(make_candidate(
         features,
@@ -1042,10 +1063,9 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Ev sahibi iki yarıyı da kazanır
     raw = (
-        val(h["wins_both_halves_rate"], 0.10) * 0.34
-        + val(a["wins_both_halves_rate"], 0.08) * 0.04
-        + min(val(h["goals_for_avg"], 1.45) / 3.2, 1.0) * 0.20
-        + min(val(a["goals_against_avg"], 1.35) / 3.0, 1.0) * 0.18
+        val(h["wins_both_halves_rate"], 0.10) * 0.42
+        + min(val(h["goals_for_avg"], 1.45) / 2.80, 1.0) * 0.18
+        + min(val(a["goals_against_avg"], 1.35) / 2.60, 1.0) * 0.16
         + val(h["wins_first_half_rate"], 0.25) * 0.12
         + val(h["wins_second_half_rate"], 0.28) * 0.12
     )
@@ -1058,11 +1078,11 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Deplasman iki yarıyı da kazanır
     raw = (
-        val(a["wins_both_halves_rate"], 0.08) * 0.34
-        + min(val(a["goals_for_avg"], 1.30) / 3.2, 1.0) * 0.20
-        + min(val(h["goals_against_avg"], 1.30) / 3.0, 1.0) * 0.18
-        + val(a["wins_first_half_rate"], 0.22) * 0.14
-        + val(a["wins_second_half_rate"], 0.25) * 0.14
+        val(a["wins_both_halves_rate"], 0.08) * 0.42
+        + min(val(a["goals_for_avg"], 1.30) / 2.80, 1.0) * 0.18
+        + min(val(h["goals_against_avg"], 1.30) / 2.60, 1.0) * 0.16
+        + val(a["wins_first_half_rate"], 0.22) * 0.12
+        + val(a["wins_second_half_rate"], 0.25) * 0.12
     )
     candidates.append(make_candidate(
         features,
@@ -1072,13 +1092,16 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     # Gol aralığı 0-1
-    low_goal_signal = 1.0 - min((val(h["goals_for_avg"], 1.2) + val(a["goals_for_avg"], 1.1)) / 3.2, 1.0)
+    expected_goals = val(h["goals_for_avg"], 1.2) + val(a["goals_for_avg"], 1.1)
+    conceded_mix = val(h["goals_against_avg"], 1.1) + val(a["goals_against_avg"], 1.1)
+
+    low_goal_signal = 1.0 - min((expected_goals + conceded_mix * 0.35) / 3.40, 1.0)
     raw = (
-        val(h["goal_range_0_1_rate"], 0.18) * 0.22
-        + val(a["goal_range_0_1_rate"], 0.18) * 0.22
-        + val(l["goal_range_0_1_rate"], 0.18) * 0.18
-        + low_goal_signal * 0.28
-        + val(allp["goal_range_0_1_rate"], 0.18) * 0.10
+        val(h["goal_range_0_1_rate"], 0.18) * 0.26
+        + val(a["goal_range_0_1_rate"], 0.18) * 0.26
+        + val(l["goal_range_0_1_rate"], 0.18) * 0.16
+        + low_goal_signal * 0.24
+        + val(allp["goal_range_0_1_rate"], 0.18) * 0.08
     )
     candidates.append(make_candidate(
         features,
@@ -1088,13 +1111,13 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     # Gol aralığı 2-3
-    balanced_goal_signal = 1.0 - min(abs((val(h["goals_for_avg"], 1.2) + val(a["goals_for_avg"], 1.1)) - 2.6) / 2.6, 1.0)
+    balanced_goal_signal = 1.0 - min(abs(expected_goals - 2.45) / 2.45, 1.0)
     raw = (
-        val(h["goal_range_2_3_rate"], 0.42) * 0.24
-        + val(a["goal_range_2_3_rate"], 0.42) * 0.24
-        + val(l["goal_range_2_3_rate"], 0.42) * 0.18
-        + balanced_goal_signal * 0.24
-        + val(allp["goal_range_2_3_rate"], 0.42) * 0.10
+        val(h["goal_range_2_3_rate"], 0.42) * 0.28
+        + val(a["goal_range_2_3_rate"], 0.42) * 0.28
+        + val(l["goal_range_2_3_rate"], 0.42) * 0.16
+        + balanced_goal_signal * 0.20
+        + val(allp["goal_range_2_3_rate"], 0.42) * 0.08
     )
     candidates.append(make_candidate(
         features,
@@ -1104,14 +1127,13 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     # Gol aralığı 4-5
-    high_goal_signal = min((val(h["goals_for_avg"], 1.4) + val(a["goals_for_avg"], 1.3)) / 4.1, 1.0)
-    concede_signal = min((val(h["goals_against_avg"], 1.2) + val(a["goals_against_avg"], 1.2)) / 3.8, 1.0)
+    high_goal_signal = min((expected_goals + conceded_mix * 0.35) / 3.80, 1.0)
     raw = (
-        val(h["goal_range_4_5_rate"], 0.20) * 0.22
-        + val(a["goal_range_4_5_rate"], 0.20) * 0.22
-        + val(l["goal_range_4_5_rate"], 0.20) * 0.16
-        + high_goal_signal * 0.22
-        + concede_signal * 0.18
+        val(h["goal_range_4_5_rate"], 0.20) * 0.26
+        + val(a["goal_range_4_5_rate"], 0.20) * 0.26
+        + val(l["goal_range_4_5_rate"], 0.20) * 0.14
+        + high_goal_signal * 0.24
+        + min(conceded_mix / 3.40, 1.0) * 0.10
     )
     candidates.append(make_candidate(
         features,
@@ -1121,13 +1143,13 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     # Gol aralığı 6+
-    very_high_goal_signal = min((val(h["goals_for_avg"], 1.5) + val(a["goals_for_avg"], 1.4)) / 5.0, 1.0)
+    very_high_goal_signal = min((expected_goals + conceded_mix * 0.50) / 4.70, 1.0)
     raw = (
-        val(h["goal_range_6_plus_rate"], 0.05) * 0.25
-        + val(a["goal_range_6_plus_rate"], 0.05) * 0.25
-        + val(l["goal_range_6_plus_rate"], 0.05) * 0.15
-        + very_high_goal_signal * 0.20
-        + min((val(h["goals_against_avg"], 1.3) + val(a["goals_against_avg"], 1.3)) / 4.6, 1.0) * 0.15
+        val(h["goal_range_6_plus_rate"], 0.05) * 0.34
+        + val(a["goal_range_6_plus_rate"], 0.05) * 0.34
+        + val(l["goal_range_6_plus_rate"], 0.05) * 0.10
+        + very_high_goal_signal * 0.16
+        + min(conceded_mix / 4.20, 1.0) * 0.06
     )
     candidates.append(make_candidate(
         features,
@@ -1137,13 +1159,15 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     # İki yarıda 1.5 üst
+    fh_attack = val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)
+    sh_attack = val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)
+
     raw = (
-        val(h["both_halves_over_1_5_rate"], 0.12) * 0.22
-        + val(a["both_halves_over_1_5_rate"], 0.12) * 0.22
-        + val(l["both_halves_over_1_5_rate"], 0.12) * 0.16
-        + min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.7, 1.0) * 0.16
-        + min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 1.9, 1.0) * 0.16
-        + high_goal_signal * 0.08
+        val(h["both_halves_over_1_5_rate"], 0.12) * 0.30
+        + val(a["both_halves_over_1_5_rate"], 0.12) * 0.30
+        + val(l["both_halves_over_1_5_rate"], 0.12) * 0.12
+        + min(fh_attack / 1.45, 1.0) * 0.14
+        + min(sh_attack / 1.60, 1.0) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -1154,12 +1178,11 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # İki yarıda 1.5 alt
     raw = (
-        val(h["both_halves_under_1_5_rate"], 0.58) * 0.24
-        + val(a["both_halves_under_1_5_rate"], 0.58) * 0.24
-        + val(l["both_halves_under_1_5_rate"], 0.58) * 0.18
-        + (1.0 - min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.9, 1.0)) * 0.15
-        + (1.0 - min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 2.1, 1.0)) * 0.15
-        + low_goal_signal * 0.04
+        val(h["both_halves_under_1_5_rate"], 0.58) * 0.28
+        + val(a["both_halves_under_1_5_rate"], 0.58) * 0.28
+        + val(l["both_halves_under_1_5_rate"], 0.58) * 0.16
+        + (1.0 - min(fh_attack / 1.90, 1.0)) * 0.14
+        + (1.0 - min(sh_attack / 2.05, 1.0)) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -1170,21 +1193,22 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Korner beklentisi
     expected_corners = (
-        val(h["corners_for_avg"], 4.5)
-        + val(a["corners_for_avg"], 4.2)
-        + val(h["corners_against_avg"], 4.2) * 0.30
-        + val(a["corners_against_avg"], 4.2) * 0.30
+        val(h["corners_for_avg"], 4.2)
+        + val(a["corners_for_avg"], 4.0)
+        + val(h["corners_against_avg"], 4.0) * 0.22
+        + val(a["corners_against_avg"], 4.0) * 0.22
     )
 
-    shot_tempo = min((val(h["shots_for_avg"], 10.0) + val(a["shots_for_avg"], 10.0)) / 30.0, 1.0)
+    shot_tempo = min((val(h["shots_for_avg"], 9.5) + val(a["shots_for_avg"], 9.5)) / 32.0, 1.0)
     league_corner_avg = val(l["total_corners_avg"], val(allp["total_corners_avg"], 9.0))
 
     raw = (
-        val(h["corners_over_7_5_rate"], 0.65) * 0.18
-        + val(a["corners_over_7_5_rate"], 0.65) * 0.18
-        + val(l["corners_over_7_5_rate"], 0.65) * 0.16
-        + min(expected_corners / 10.5, 1.0) * 0.32
-        + shot_tempo * 0.16
+        val(h["corners_over_7_5_rate"], 0.60) * 0.14
+        + val(a["corners_over_7_5_rate"], 0.60) * 0.14
+        + val(l["corners_over_7_5_rate"], 0.60) * 0.12
+        + min(expected_corners / 11.4, 1.0) * 0.34
+        + shot_tempo * 0.12
+        + min(league_corner_avg / 10.8, 1.0) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -1194,11 +1218,12 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     raw = (
-        val(h["corners_over_8_5_rate"], 0.55) * 0.18
-        + val(a["corners_over_8_5_rate"], 0.55) * 0.18
-        + val(l["corners_over_8_5_rate"], 0.55) * 0.16
-        + min(expected_corners / 11.5, 1.0) * 0.32
-        + shot_tempo * 0.16
+        val(h["corners_over_8_5_rate"], 0.50) * 0.14
+        + val(a["corners_over_8_5_rate"], 0.50) * 0.14
+        + val(l["corners_over_8_5_rate"], 0.50) * 0.12
+        + min(expected_corners / 12.5, 1.0) * 0.36
+        + shot_tempo * 0.10
+        + min(league_corner_avg / 11.4, 1.0) * 0.14
     )
     candidates.append(make_candidate(
         features,
@@ -1208,11 +1233,12 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
     ))
 
     raw = (
-        val(h["corners_over_9_5_rate"], 0.45) * 0.18
-        + val(a["corners_over_9_5_rate"], 0.45) * 0.18
-        + val(l["corners_over_9_5_rate"], 0.45) * 0.16
-        + min(expected_corners / 12.5, 1.0) * 0.34
-        + shot_tempo * 0.14
+        val(h["corners_over_9_5_rate"], 0.40) * 0.14
+        + val(a["corners_over_9_5_rate"], 0.40) * 0.14
+        + val(l["corners_over_9_5_rate"], 0.40) * 0.12
+        + min(expected_corners / 13.6, 1.0) * 0.38
+        + shot_tempo * 0.10
+        + min(league_corner_avg / 12.2, 1.0) * 0.12
     )
     candidates.append(make_candidate(
         features,
@@ -1221,13 +1247,14 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
         "Toplam korner beklentisi yüksek; 9.5 üst korner destekleniyor.",
     ))
 
-    low_corner_signal_105 = 1.0 - min(expected_corners / 12.5, 1.0)
+    low_corner_signal_105 = 1.0 - min(expected_corners / 11.6, 1.0)
     raw = (
-        val(h["corners_under_10_5_rate"], 0.55) * 0.20
-        + val(a["corners_under_10_5_rate"], 0.55) * 0.20
-        + val(l["corners_under_10_5_rate"], 0.55) * 0.18
+        val(h["corners_under_10_5_rate"], 0.52) * 0.18
+        + val(a["corners_under_10_5_rate"], 0.52) * 0.18
+        + val(l["corners_under_10_5_rate"], 0.52) * 0.14
         + low_corner_signal_105 * 0.28
-        + (1.0 - min(league_corner_avg / 11.5, 1.0)) * 0.14
+        + (1.0 - min(league_corner_avg / 11.0, 1.0)) * 0.14
+        + (1.0 - shot_tempo) * 0.08
     )
     candidates.append(make_candidate(
         features,
@@ -1236,13 +1263,14 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
         "Korner beklentisi yüksek çizgi için sınırlı; 10.5 alt korner destekleniyor.",
     ))
 
-    low_corner_signal_115 = 1.0 - min(expected_corners / 13.5, 1.0)
+    low_corner_signal_115 = 1.0 - min(expected_corners / 12.8, 1.0)
     raw = (
-        val(h["corners_under_11_5_rate"], 0.65) * 0.20
-        + val(a["corners_under_11_5_rate"], 0.65) * 0.20
-        + val(l["corners_under_11_5_rate"], 0.65) * 0.18
+        val(h["corners_under_11_5_rate"], 0.62) * 0.18
+        + val(a["corners_under_11_5_rate"], 0.62) * 0.18
+        + val(l["corners_under_11_5_rate"], 0.62) * 0.14
         + low_corner_signal_115 * 0.28
-        + (1.0 - min(league_corner_avg / 12.5, 1.0)) * 0.14
+        + (1.0 - min(league_corner_avg / 12.0, 1.0)) * 0.14
+        + (1.0 - shot_tempo) * 0.08
     )
     candidates.append(make_candidate(
         features,
@@ -1291,9 +1319,11 @@ def print_config() -> None:
     print(f"MIN_CONFIDENCE      : {MIN_CONFIDENCE}")
     print("ODDS_USAGE          : disabled")
     print("MARKETS             : halves, goal_range, corners")
+    print("CORNER_LIMIT        : disabled")
+    print("CORNER_BALANCE      : score_penalty_enabled")
 
 
-def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
+def process_fixture(db: DB, fixture: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     event_id = fixture["event_id"]
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
@@ -1310,7 +1340,7 @@ def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
 
     if not history:
         print("[ATLANDI] Geçmiş veri yok.")
-        return False
+        return None
 
     features = build_features(fixture, history)
 
@@ -1331,11 +1361,11 @@ def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
 
     if home_n < MIN_TEAM_MATCHES:
         print(f"[ATLANDI] Ev sahibi örneklem düşük: {home_n}")
-        return False
+        return None
 
     if away_n < MIN_TEAM_MATCHES:
         print(f"[ATLANDI] Deplasman örneklem düşük: {away_n}")
-        return False
+        return None
 
     if league_n < MIN_LEAGUE_MATCHES:
         print(f"[UYARI] Lig örneklemi düşük: {league_n}. Takım verisiyle devam ediliyor.")
@@ -1344,7 +1374,7 @@ def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
 
     if prediction is None:
         print("[ATLANDI] Yeterli confidence veren özel market yok.")
-        return False
+        return None
 
     db.upsert_prediction(prediction)
 
@@ -1357,7 +1387,7 @@ def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
     )
     print(f"[NEDEN] {prediction['reason_text']}")
 
-    return True
+    return prediction
 
 
 def main() -> None:
@@ -1368,6 +1398,8 @@ def main() -> None:
     total_fixtures = 0
     total_predictions = 0
     total_skipped = 0
+
+    market_counter: Dict[str, int] = {}
 
     try:
         db.connect()
@@ -1382,10 +1414,12 @@ def main() -> None:
             return
 
         for fixture in fixtures:
-            ok = process_fixture(db, fixture)
+            prediction = process_fixture(db, fixture)
 
-            if ok:
+            if prediction:
                 total_predictions += 1
+                market_type = prediction.get("market_type", "unknown")
+                market_counter[market_type] = market_counter.get(market_type, 0) + 1
             else:
                 total_skipped += 1
 
@@ -1393,7 +1427,13 @@ def main() -> None:
         print(f"Toplam fikstür     : {total_fixtures}")
         print(f"Üretilen tahmin    : {total_predictions}")
         print(f"Atlanan maç        : {total_skipped}")
-        print("[BİTTİ] Özel market tahmin üretimi tamamlandı.")
+
+        if market_counter:
+            print("\n[MARKET DAĞILIMI]")
+            for market_type, count in sorted(market_counter.items(), key=lambda x: x[1], reverse=True):
+                print(f"{market_type:<22}: {count}")
+
+        print("\n[BİTTİ] Dengelenmiş özel market tahmin üretimi tamamlandı.")
 
     except mysql.connector.Error as e:
         print(f"[MYSQL HATA] {e}")
