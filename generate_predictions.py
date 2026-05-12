@@ -1,349 +1,1410 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+generate_predictions.py
+
+Oran kullanmayan özel futbol tahmin motoru.
+
+Ürettiği marketler:
+- 1. yarı karşılıklı gol
+- 2. yarı karşılıklı gol
+- ev sahibi iki yarıda da gol
+- deplasman iki yarıda da gol
+- ev sahibi iki yarıyı da kazanır
+- deplasman iki yarıyı da kazanır
+- toplam gol aralığı: 0-1, 2-3, 4-5, 6+
+- iki yarıda 1.5 üst
+- iki yarıda 1.5 alt
+- toplam korner üst/alt
+
+Kullanmaz:
+- bahis oranları
+- odds kolonları
+- stake market isimleri
+- şut/faul/kart marketleri
+"""
+
 import os
-import joblib
-import numpy as np
-import pandas as pd
+import sys
+from typing import Any, Dict, List, Optional
+
 import mysql.connector
 
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.metrics import accuracy_score, log_loss, classification_report
-from sklearn.preprocessing import LabelEncoder
 
+# ============================================================
+# CONFIG
+# ============================================================
+
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v4_custom_halves_corners_no_odds")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
     "password": os.getenv("DB_PASSWORD"),
     "database": os.getenv("DB_NAME"),
-    "port": int(os.getenv("DB_PORT", 3306)),
+    "port": int(os.getenv("DB_PORT", "3306")),
+}
+
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "550"))
+TARGET_DAYS_AHEAD = int(os.getenv("TARGET_DAYS_AHEAD", "1"))
+
+MIN_TEAM_MATCHES = int(os.getenv("MIN_TEAM_MATCHES", "5"))
+MIN_LEAGUE_MATCHES = int(os.getenv("MIN_LEAGUE_MATCHES", "10"))
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.60"))
+
+MAX_TEAM_PROFILE_MATCHES = int(os.getenv("MAX_TEAM_PROFILE_MATCHES", "20"))
+
+
+# ============================================================
+# MARKET MAP
+# ============================================================
+
+MARKET_MAP = {
+    "first_half_btts_yes": {
+        "market_type": "half_btts",
+        "selection": "first_half_btts_yes",
+        "market_key": "first_half_both_teams_to_score",
+        "market_name": "1. Yarı Karşılıklı Gol",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+    "second_half_btts_yes": {
+        "market_type": "half_btts",
+        "selection": "second_half_btts_yes",
+        "market_key": "second_half_both_teams_to_score",
+        "market_name": "2. Yarı Karşılıklı Gol",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+
+    "home_scores_both_halves": {
+        "market_type": "team_halves_goal",
+        "selection": "home_scores_both_halves",
+        "market_key": "home_scores_both_halves",
+        "market_name": "Ev Sahibi İki Yarıda da Gol Atar",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+    "away_scores_both_halves": {
+        "market_type": "team_halves_goal",
+        "selection": "away_scores_both_halves",
+        "market_key": "away_scores_both_halves",
+        "market_name": "Deplasman İki Yarıda da Gol Atar",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+
+    "home_wins_both_halves": {
+        "market_type": "team_halves_result",
+        "selection": "home_wins_both_halves",
+        "market_key": "home_wins_both_halves",
+        "market_name": "Ev Sahibi İki Yarıyı da Kazanır",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+    "away_wins_both_halves": {
+        "market_type": "team_halves_result",
+        "selection": "away_wins_both_halves",
+        "market_key": "away_wins_both_halves",
+        "market_name": "Deplasman İki Yarıyı da Kazanır",
+        "selection_key": "yes",
+        "selection_name": "Evet",
+    },
+
+    "total_goals_0_1": {
+        "market_type": "goal_range",
+        "selection": "total_goals_0_1",
+        "market_key": "total_goals_range",
+        "market_name": "Toplam Gol Aralığı",
+        "selection_key": "0_1",
+        "selection_name": "0-1",
+    },
+    "total_goals_2_3": {
+        "market_type": "goal_range",
+        "selection": "total_goals_2_3",
+        "market_key": "total_goals_range",
+        "market_name": "Toplam Gol Aralığı",
+        "selection_key": "2_3",
+        "selection_name": "2-3",
+    },
+    "total_goals_4_5": {
+        "market_type": "goal_range",
+        "selection": "total_goals_4_5",
+        "market_key": "total_goals_range",
+        "market_name": "Toplam Gol Aralığı",
+        "selection_key": "4_5",
+        "selection_name": "4-5",
+    },
+    "total_goals_6_plus": {
+        "market_type": "goal_range",
+        "selection": "total_goals_6_plus",
+        "market_key": "total_goals_range",
+        "market_name": "Toplam Gol Aralığı",
+        "selection_key": "6_plus",
+        "selection_name": "6+",
+    },
+
+    "both_halves_over_1_5": {
+        "market_type": "both_halves_goals",
+        "selection": "both_halves_over_1_5",
+        "market_key": "both_halves_total_goals",
+        "market_name": "İki Yarıda da 1.5 Üst",
+        "selection_key": "over_1_5",
+        "selection_name": "Evet",
+    },
+    "both_halves_under_1_5": {
+        "market_type": "both_halves_goals",
+        "selection": "both_halves_under_1_5",
+        "market_key": "both_halves_total_goals",
+        "market_name": "İki Yarıda da 1.5 Alt",
+        "selection_key": "under_1_5",
+        "selection_name": "Evet",
+    },
+
+    "corners_over_7_5": {
+        "market_type": "corners",
+        "selection": "corners_over_7_5",
+        "market_key": "total_corners",
+        "market_name": "Toplam Korner",
+        "selection_key": "over_7_5",
+        "selection_name": "7.5 Üst",
+    },
+    "corners_over_8_5": {
+        "market_type": "corners",
+        "selection": "corners_over_8_5",
+        "market_key": "total_corners",
+        "market_name": "Toplam Korner",
+        "selection_key": "over_8_5",
+        "selection_name": "8.5 Üst",
+    },
+    "corners_over_9_5": {
+        "market_type": "corners",
+        "selection": "corners_over_9_5",
+        "market_key": "total_corners",
+        "market_name": "Toplam Korner",
+        "selection_key": "over_9_5",
+        "selection_name": "9.5 Üst",
+    },
+    "corners_under_10_5": {
+        "market_type": "corners",
+        "selection": "corners_under_10_5",
+        "market_key": "total_corners",
+        "market_name": "Toplam Korner",
+        "selection_key": "under_10_5",
+        "selection_name": "10.5 Alt",
+    },
+    "corners_under_11_5": {
+        "market_type": "corners",
+        "selection": "corners_under_11_5",
+        "market_key": "total_corners",
+        "market_name": "Toplam Korner",
+        "selection_key": "under_11_5",
+        "selection_name": "11.5 Alt",
+    },
 }
 
 
-MODEL_DIR = "models_markets"
-os.makedirs(MODEL_DIR, exist_ok=True)
+MARKET_PRIORITY_BONUS = {
+    "first_half_btts_yes": 0.010,
+    "second_half_btts_yes": 0.015,
+
+    "home_scores_both_halves": 0.020,
+    "away_scores_both_halves": 0.020,
+
+    "home_wins_both_halves": 0.025,
+    "away_wins_both_halves": 0.025,
+
+    "total_goals_0_1": 0.005,
+    "total_goals_2_3": 0.010,
+    "total_goals_4_5": 0.015,
+    "total_goals_6_plus": 0.020,
+
+    "both_halves_over_1_5": 0.020,
+    "both_halves_under_1_5": 0.005,
+
+    "corners_over_7_5": 0.000,
+    "corners_over_8_5": 0.010,
+    "corners_over_9_5": 0.015,
+    "corners_under_10_5": 0.000,
+    "corners_under_11_5": 0.000,
+}
 
 
-def connect_db():
-    return mysql.connector.connect(**DB_CONFIG)
+# ============================================================
+# SQL
+# ============================================================
+
+CREATE_PREDICTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS predictions_football (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+  event_id BIGINT UNSIGNED NOT NULL,
+  start_utc DATE NULL,
+  start_time_utc TIME NULL,
+
+  home_team VARCHAR(128) NULL,
+  away_team VARCHAR(128) NULL,
+
+  tournament_id INT NULL,
+  tournament_name VARCHAR(128) NULL,
+  country VARCHAR(64) NULL,
+
+  market_type VARCHAR(64) NOT NULL,
+  selection VARCHAR(64) NOT NULL,
+
+  market_key VARCHAR(64) NULL,
+  market_name VARCHAR(128) NULL,
+  selection_key VARCHAR(64) NULL,
+  selection_name VARCHAR(128) NULL,
+
+  confidence_score FLOAT NOT NULL,
+  selection_score FLOAT NULL,
+  confidence_label VARCHAR(32) NOT NULL,
+
+  model_version VARCHAR(64) NOT NULL,
+  reason_text TEXT NULL,
+
+  input_sample_size INT NULL,
+  home_sample_size INT NULL,
+  away_sample_size INT NULL,
+  league_sample_size INT NULL,
+
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_event_model (event_id, model_version),
+  KEY idx_event_id (event_id),
+  KEY idx_start_utc (start_utc),
+  KEY idx_market (market_type, selection),
+  KEY idx_market_key (market_key, selection_key),
+  KEY idx_confidence (confidence_score),
+  KEY idx_selection_score (selection_score),
+  KEY idx_model_version (model_version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
 
 
-def load_finished_matches():
-    conn = connect_db()
+# ============================================================
+# HELPERS
+# ============================================================
 
-    query = """
-    SELECT
-        event_id,
-        start_utc,
-        start_time_utc,
-        home_team,
-        away_team,
-        tournament_id,
-        tournament_name,
-        country,
-
-        ht_home,
-        ht_away,
-        ft_home,
-        ft_away,
-
-        poss_h,
-        poss_a,
-        corn_h,
-        corn_a,
-        shot_h,
-        shot_a,
-        shot_on_h,
-        shot_on_a,
-        fouls_h,
-        fouls_a,
-        offsides_h,
-        offsides_a,
-        saves_h,
-        saves_a,
-        passes_h,
-        passes_a,
-        tackles_h,
-        tackles_a
-    FROM results_football
-    WHERE status IN ('finished', 'ended')
-      AND ht_home IS NOT NULL
-      AND ht_away IS NOT NULL
-      AND ft_home IS NOT NULL
-      AND ft_away IS NOT NULL
-    ORDER BY start_utc, start_time_utc;
-    """
-
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
+def safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def add_targets(df):
-    df = df.copy()
-
-    df["sh_home"] = df["ft_home"] - df["ht_home"]
-    df["sh_away"] = df["ft_away"] - df["ht_away"]
-
-    df["fh_total_goals"] = df["ht_home"] + df["ht_away"]
-    df["sh_total_goals"] = df["sh_home"] + df["sh_away"]
-    df["total_goals"] = df["ft_home"] + df["ft_away"]
-
-    df["target_fh_btts"] = ((df["ht_home"] > 0) & (df["ht_away"] > 0)).astype(int)
-    df["target_sh_btts"] = ((df["sh_home"] > 0) & (df["sh_away"] > 0)).astype(int)
-
-    df["target_home_scores_both_halves"] = ((df["ht_home"] > 0) & (df["sh_home"] > 0)).astype(int)
-    df["target_away_scores_both_halves"] = ((df["ht_away"] > 0) & (df["sh_away"] > 0)).astype(int)
-
-    df["target_home_wins_both_halves"] = (
-        (df["ht_home"] > df["ht_away"]) &
-        (df["sh_home"] > df["sh_away"])
-    ).astype(int)
-
-    df["target_away_wins_both_halves"] = (
-        (df["ht_away"] > df["ht_home"]) &
-        (df["sh_away"] > df["sh_home"])
-    ).astype(int)
-
-    df["target_both_halves_over15"] = (
-        (df["fh_total_goals"] > 1.5) &
-        (df["sh_total_goals"] > 1.5)
-    ).astype(int)
-
-    df["target_both_halves_under15"] = (
-        (df["fh_total_goals"] < 1.5) &
-        (df["sh_total_goals"] < 1.5)
-    ).astype(int)
-
-    df["target_goal_range"] = pd.cut(
-        df["total_goals"],
-        bins=[-1, 1, 3, 5, 99],
-        labels=[0, 1, 2, 3]
-    ).astype(int)
-
-    df["total_corners"] = df["corn_h"].fillna(0) + df["corn_a"].fillna(0)
-
-    df["target_corners_over85"] = (df["total_corners"] > 8.5).astype(int)
-    df["target_corners_over95"] = (df["total_corners"] > 9.5).astype(int)
-    df["target_corners_over105"] = (df["total_corners"] > 10.5).astype(int)
-
-    df["target_home_corners_over45"] = (df["corn_h"] > 4.5).astype(int)
-    df["target_away_corners_over45"] = (df["corn_a"] > 4.5).astype(int)
-
-    df["target_corner_range"] = pd.cut(
-        df["total_corners"],
-        bins=[-1, 7, 10, 99],
-        labels=[0, 1, 2]
-    ).astype(int)
-
-    return df
+def avg(values: List[Optional[float]]) -> Optional[float]:
+    clean = [float(v) for v in values if v is not None]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
 
 
-def make_team_form(df):
-    home = df[[
-        "event_id", "start_utc", "home_team", "away_team",
-        "ft_home", "ft_away", "ht_home", "ht_away",
-        "corn_h", "corn_a", "shot_h", "shot_a",
-        "shot_on_h", "shot_on_a", "poss_h", "poss_a"
-    ]].copy()
+def rate(values: List[bool]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(1 for v in values if v) / len(values)
 
-    home.columns = [
-        "event_id", "start_utc", "team", "opponent",
-        "goals_for", "goals_against", "ht_goals_for", "ht_goals_against",
-        "corners_for", "corners_against", "shots_for", "shots_against",
-        "shots_on_for", "shots_on_against", "poss_for", "poss_against"
-    ]
 
-    away = df[[
-        "event_id", "start_utc", "away_team", "home_team",
-        "ft_away", "ft_home", "ht_away", "ht_home",
-        "corn_a", "corn_h", "shot_a", "shot_h",
-        "shot_on_a", "shot_on_h", "poss_a", "poss_h"
-    ]].copy()
+def val(value: Optional[float], default: float) -> float:
+    if value is None:
+        return default
+    return float(value)
 
-    away.columns = home.columns
 
-    long_df = pd.concat([home, away], ignore_index=True)
-    long_df = long_df.sort_values(["team", "start_utc", "event_id"])
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
 
-    long_df["win"] = (long_df["goals_for"] > long_df["goals_against"]).astype(int)
-    long_df["btts"] = ((long_df["goals_for"] > 0) & (long_df["goals_against"] > 0)).astype(int)
-    long_df["over25"] = ((long_df["goals_for"] + long_df["goals_against"]) > 2.5).astype(int)
 
-    rolling_cols = [
-        "goals_for",
-        "goals_against",
-        "ht_goals_for",
-        "ht_goals_against",
-        "corners_for",
-        "corners_against",
-        "shots_for",
-        "shots_against",
-        "shots_on_for",
-        "shots_on_against",
-        "poss_for",
-        "win",
-        "btts",
-        "over25",
-    ]
+def confidence_label(score: float) -> str:
+    if score >= 0.74:
+        return "high"
+    if score >= 0.60:
+        return "medium"
+    return "low"
 
-    for col in rolling_cols:
-        long_df[f"{col}_last5"] = (
-            long_df
-            .groupby("team")[col]
-            .shift(1)
-            .rolling(5, min_periods=2)
-            .mean()
-            .reset_index(level=0, drop=True)
+
+# ============================================================
+# DB
+# ============================================================
+
+class DB:
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.conn = None
+        self.cur = None
+
+    def connect(self) -> None:
+        self.close(silent=True)
+
+        missing = [k for k, v in self.cfg.items() if k != "port" and not v]
+        if missing:
+            raise RuntimeError(f"Eksik DB ortam değişkenleri: {missing}")
+
+        self.conn = mysql.connector.connect(**self.cfg)
+        self.conn.autocommit = True
+        self.cur = self.conn.cursor(dictionary=True)
+
+        self.cur.execute(CREATE_PREDICTIONS_TABLE)
+        self.ensure_columns()
+
+        print("[DB] Bağlantı başarılı.")
+        print("[DB] predictions_football tablosu hazır.")
+
+    def ensure_columns(self) -> None:
+        columns = {
+            "market_key": "VARCHAR(64) NULL",
+            "market_name": "VARCHAR(128) NULL",
+            "selection_key": "VARCHAR(64) NULL",
+            "selection_name": "VARCHAR(128) NULL",
+            "confidence_score": "FLOAT NOT NULL DEFAULT 0",
+            "selection_score": "FLOAT NULL",
+            "confidence_label": "VARCHAR(32) NOT NULL DEFAULT 'low'",
+            "model_version": "VARCHAR(64) NOT NULL DEFAULT 'unknown'",
+            "reason_text": "TEXT NULL",
+            "input_sample_size": "INT NULL",
+            "home_sample_size": "INT NULL",
+            "away_sample_size": "INT NULL",
+            "league_sample_size": "INT NULL",
+        }
+
+        for col, definition in columns.items():
+            try:
+                self.cur.execute(
+                    f"ALTER TABLE predictions_football ADD COLUMN {col} {definition};"
+                )
+            except mysql.connector.Error:
+                pass
+
+    def ping(self) -> None:
+        try:
+            self.conn.ping(reconnect=True, attempts=3, delay=1)
+        except mysql.connector.Error:
+            print("[DB] Bağlantı koptu, yeniden bağlanılıyor...")
+            self.connect()
+
+    def get_target_fixtures(self, days_ahead: int) -> List[Dict[str, Any]]:
+        self.ping()
+
+        query = """
+        SELECT
+            event_id,
+            start_utc,
+            start_time_utc,
+            home_team,
+            away_team,
+            tournament_id,
+            tournament_name,
+            country,
+            status
+        FROM results_football
+        WHERE status IN ('notstarted', 'scheduled')
+          AND start_utc >= CURDATE()
+          AND start_utc <= DATE_ADD(CURDATE(), INTERVAL %s DAY)
+          AND home_team IS NOT NULL
+          AND away_team IS NOT NULL
+        ORDER BY start_utc ASC, start_time_utc ASC
+        """
+
+        self.cur.execute(query, (days_ahead,))
+        return list(self.cur.fetchall())
+
+    def get_history(
+        self,
+        home_team: str,
+        away_team: str,
+        tournament_id: Optional[int],
+        lookback_days: int,
+    ) -> List[Dict[str, Any]]:
+        self.ping()
+
+        query = """
+        SELECT
+            event_id,
+            start_utc,
+
+            home_team,
+            away_team,
+
+            tournament_id,
+            tournament_name,
+            country,
+
+            ht_home,
+            ht_away,
+            ft_home,
+            ft_away,
+
+            corn_h,
+            corn_a,
+
+            shot_h,
+            shot_a,
+            shot_on_h,
+            shot_on_a,
+
+            poss_h,
+            poss_a
+        FROM results_football
+        WHERE status IN ('finished', 'ended')
+          AND start_utc >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+          AND ft_home IS NOT NULL
+          AND ft_away IS NOT NULL
+          AND (
+                home_team = %s
+             OR away_team = %s
+             OR home_team = %s
+             OR away_team = %s
+             OR tournament_id = %s
+          )
+        ORDER BY start_utc DESC
+        """
+
+        self.cur.execute(
+            query,
+            (
+                lookback_days,
+                home_team,
+                home_team,
+                away_team,
+                away_team,
+                tournament_id,
+            ),
         )
+        return list(self.cur.fetchall())
 
-        long_df[f"{col}_last10"] = (
-            long_df
-            .groupby("team")[col]
-            .shift(1)
-            .rolling(10, min_periods=3)
-            .mean()
-            .reset_index(level=0, drop=True)
+    def upsert_prediction(self, prediction: Dict[str, Any]) -> None:
+        self.ping()
+
+        query = """
+        INSERT INTO predictions_football (
+            event_id,
+            start_utc,
+            start_time_utc,
+            home_team,
+            away_team,
+            tournament_id,
+            tournament_name,
+            country,
+
+            market_type,
+            selection,
+            market_key,
+            market_name,
+            selection_key,
+            selection_name,
+
+            confidence_score,
+            selection_score,
+            confidence_label,
+            model_version,
+            reason_text,
+
+            input_sample_size,
+            home_sample_size,
+            away_sample_size,
+            league_sample_size
         )
+        VALUES (
+            %(event_id)s,
+            %(start_utc)s,
+            %(start_time_utc)s,
+            %(home_team)s,
+            %(away_team)s,
+            %(tournament_id)s,
+            %(tournament_name)s,
+            %(country)s,
 
-    form_cols = [c for c in long_df.columns if c.endswith("_last5") or c.endswith("_last10")]
+            %(market_type)s,
+            %(selection)s,
+            %(market_key)s,
+            %(market_name)s,
+            %(selection_key)s,
+            %(selection_name)s,
 
-    return long_df[["event_id", "team"] + form_cols]
+            %(confidence_score)s,
+            %(selection_score)s,
+            %(confidence_label)s,
+            %(model_version)s,
+            %(reason_text)s,
+
+            %(input_sample_size)s,
+            %(home_sample_size)s,
+            %(away_sample_size)s,
+            %(league_sample_size)s
+        )
+        ON DUPLICATE KEY UPDATE
+            start_utc = VALUES(start_utc),
+            start_time_utc = VALUES(start_time_utc),
+            home_team = VALUES(home_team),
+            away_team = VALUES(away_team),
+            tournament_id = VALUES(tournament_id),
+            tournament_name = VALUES(tournament_name),
+            country = VALUES(country),
+
+            market_type = VALUES(market_type),
+            selection = VALUES(selection),
+            market_key = VALUES(market_key),
+            market_name = VALUES(market_name),
+            selection_key = VALUES(selection_key),
+            selection_name = VALUES(selection_name),
+
+            confidence_score = VALUES(confidence_score),
+            selection_score = VALUES(selection_score),
+            confidence_label = VALUES(confidence_label),
+            reason_text = VALUES(reason_text),
+
+            input_sample_size = VALUES(input_sample_size),
+            home_sample_size = VALUES(home_sample_size),
+            away_sample_size = VALUES(away_sample_size),
+            league_sample_size = VALUES(league_sample_size),
+            updated_at = CURRENT_TIMESTAMP
+        """
+
+        self.cur.execute(query, prediction)
+
+    def close(self, silent: bool = False) -> None:
+        try:
+            if self.cur:
+                self.cur.close()
+        except Exception as e:
+            if not silent:
+                print(f"[DB UYARI] Cursor kapatılamadı: {e}")
+
+        try:
+            if self.conn:
+                self.conn.close()
+        except Exception as e:
+            if not silent:
+                print(f"[DB UYARI] Bağlantı kapatılamadı: {e}")
+
+        self.cur = None
+        self.conn = None
 
 
-def add_form_features(df):
-    form = make_team_form(df)
+# ============================================================
+# FEATURE BUILDER
+# ============================================================
 
-    home_form = form.rename(columns={"team": "home_team"})
-    away_form = form.rename(columns={"team": "away_team"})
+def build_match_view(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ft_home = safe_float(row.get("ft_home"), None)
+    ft_away = safe_float(row.get("ft_away"), None)
+    ht_home = safe_float(row.get("ht_home"), None)
+    ht_away = safe_float(row.get("ht_away"), None)
 
-    home_form = home_form.add_prefix("home_")
-    away_form = away_form.add_prefix("away_")
+    if ft_home is None or ft_away is None:
+        return None
 
-    home_form = home_form.rename(columns={"home_event_id": "event_id"})
-    away_form = away_form.rename(columns={"away_event_id": "event_id"})
+    total_goals = ft_home + ft_away
 
-    df = df.merge(home_form, on="event_id", how="left")
-    df = df.merge(away_form, on="event_id", how="left")
+    has_half = ht_home is not None and ht_away is not None
+    if has_half:
+        second_half_home = max(ft_home - ht_home, 0)
+        second_half_away = max(ft_away - ht_away, 0)
+        first_half_goals = ht_home + ht_away
+        second_half_goals = second_half_home + second_half_away
+    else:
+        second_half_home = None
+        second_half_away = None
+        first_half_goals = None
+        second_half_goals = None
 
-    return df
+    corn_h = safe_float(row.get("corn_h"), None)
+    corn_a = safe_float(row.get("corn_a"), None)
+
+    has_corners = corn_h is not None and corn_a is not None
+    total_corners = corn_h + corn_a if has_corners else None
+
+    return {
+        "ft_home": ft_home,
+        "ft_away": ft_away,
+        "ht_home": ht_home,
+        "ht_away": ht_away,
+        "second_half_home": second_half_home,
+        "second_half_away": second_half_away,
+
+        "total_goals": total_goals,
+        "first_half_goals": first_half_goals,
+        "second_half_goals": second_half_goals,
+
+        "has_half": has_half,
+        "has_corners": has_corners,
+        "total_corners": total_corners,
+
+        "first_half_btts": has_half and ht_home >= 1 and ht_away >= 1,
+        "second_half_btts": has_half and second_half_home >= 1 and second_half_away >= 1,
+
+        "home_scores_both_halves": has_half and ht_home >= 1 and second_half_home >= 1,
+        "away_scores_both_halves": has_half and ht_away >= 1 and second_half_away >= 1,
+
+        "home_wins_both_halves": has_half and ht_home > ht_away and second_half_home > second_half_away,
+        "away_wins_both_halves": has_half and ht_away > ht_home and second_half_away > second_half_home,
+
+        "goal_range_0_1": total_goals <= 1,
+        "goal_range_2_3": 2 <= total_goals <= 3,
+        "goal_range_4_5": 4 <= total_goals <= 5,
+        "goal_range_6_plus": total_goals >= 6,
+
+        "both_halves_over_1_5": has_half and first_half_goals >= 2 and second_half_goals >= 2,
+        "both_halves_under_1_5": has_half and first_half_goals <= 1 and second_half_goals <= 1,
+
+        "corners_over_7_5": has_corners and total_corners >= 8,
+        "corners_over_8_5": has_corners and total_corners >= 9,
+        "corners_over_9_5": has_corners and total_corners >= 10,
+        "corners_under_10_5": has_corners and total_corners <= 10,
+        "corners_under_11_5": has_corners and total_corners <= 11,
+    }
 
 
-def prepare_features(df):
-    df = df.copy()
+def build_team_view(row: Dict[str, Any], team: str) -> Optional[Dict[str, Any]]:
+    match = build_match_view(row)
+    if not match:
+        return None
 
-    df["country"] = df["country"].fillna("unknown")
-    df["tournament_name"] = df["tournament_name"].fillna("unknown")
+    is_home = row.get("home_team") == team
+    is_away = row.get("away_team") == team
 
-    for col in ["country", "tournament_name"]:
-        encoder = LabelEncoder()
-        df[col] = encoder.fit_transform(df[col].astype(str))
+    if not is_home and not is_away:
+        return None
 
-    base_features = [
-        "country",
-        "tournament_name",
-        "poss_h",
-        "poss_a",
-        "shot_h",
-        "shot_a",
-        "shot_on_h",
-        "shot_on_a",
-        "corn_h",
-        "corn_a",
-        "fouls_h",
-        "fouls_a",
-        "passes_h",
-        "passes_a",
-        "tackles_h",
-        "tackles_a",
-    ]
+    ft_home = match["ft_home"]
+    ft_away = match["ft_away"]
+    ht_home = match["ht_home"]
+    ht_away = match["ht_away"]
+    has_half = match["has_half"]
 
-    form_features = [
-        c for c in df.columns
-        if c.startswith("home_") or c.startswith("away_")
-    ]
+    if is_home:
+        goals_for = ft_home
+        goals_against = ft_away
 
-    feature_cols = base_features + form_features
+        if has_half:
+            ht_for = ht_home
+            ht_against = ht_away
+            sh_for = match["second_half_home"]
+            sh_against = match["second_half_away"]
+            wins_first_half = ht_home > ht_away
+            wins_second_half = match["second_half_home"] > match["second_half_away"]
+        else:
+            ht_for = None
+            ht_against = None
+            sh_for = None
+            sh_against = None
+            wins_first_half = False
+            wins_second_half = False
 
-    for col in feature_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        corners_for = safe_float(row.get("corn_h"), None)
+        corners_against = safe_float(row.get("corn_a"), None)
+        shots_for = safe_float(row.get("shot_h"), None)
+        shots_against = safe_float(row.get("shot_a"), None)
+        shots_on_for = safe_float(row.get("shot_on_h"), None)
+        possession = safe_float(row.get("poss_h"), None)
 
-    df[feature_cols] = df[feature_cols].fillna(df[feature_cols].median(numeric_only=True))
+    else:
+        goals_for = ft_away
+        goals_against = ft_home
 
-    return df, feature_cols
+        if has_half:
+            ht_for = ht_away
+            ht_against = ht_home
+            sh_for = match["second_half_away"]
+            sh_against = match["second_half_home"]
+            wins_first_half = ht_away > ht_home
+            wins_second_half = match["second_half_away"] > match["second_half_home"]
+        else:
+            ht_for = None
+            ht_against = None
+            sh_for = None
+            sh_against = None
+            wins_first_half = False
+            wins_second_half = False
+
+        corners_for = safe_float(row.get("corn_a"), None)
+        corners_against = safe_float(row.get("corn_h"), None)
+        shots_for = safe_float(row.get("shot_a"), None)
+        shots_against = safe_float(row.get("shot_h"), None)
+        shots_on_for = safe_float(row.get("shot_on_a"), None)
+        possession = safe_float(row.get("poss_a"), None)
+
+    return {
+        **match,
+
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+
+        "ht_for": ht_for,
+        "ht_against": ht_against,
+        "sh_for": sh_for,
+        "sh_against": sh_against,
+
+        "scores_first_half": has_half and ht_for >= 1,
+        "scores_second_half": has_half and sh_for >= 1,
+        "scores_both_halves": has_half and ht_for >= 1 and sh_for >= 1,
+
+        "wins_first_half": has_half and wins_first_half,
+        "wins_second_half": has_half and wins_second_half,
+        "wins_both_halves": has_half and wins_first_half and wins_second_half,
+
+        "concedes_first_half": has_half and ht_against >= 1,
+        "concedes_second_half": has_half and sh_against >= 1,
+        "concedes_both_halves": has_half and ht_against >= 1 and sh_against >= 1,
+
+        "corners_for": corners_for,
+        "corners_against": corners_against,
+        "shots_for": shots_for,
+        "shots_against": shots_against,
+        "shots_on_for": shots_on_for,
+        "possession": possession,
+    }
 
 
-def train_single_model(df, feature_cols, target_col):
-    clean = df.dropna(subset=[target_col]).copy()
+def profile_from_match_views(views: List[Dict[str, Any]]) -> Dict[str, Any]:
+    half_views = [v for v in views if v["has_half"]]
+    corner_views = [v for v in views if v["has_corners"]]
 
-    X = clean[feature_cols]
-    y = clean[target_col]
+    return {
+        "sample_size": len(views),
+        "half_sample_size": len(half_views),
+        "corner_sample_size": len(corner_views),
 
-    split = int(len(clean) * 0.8)
+        "goals_avg": avg([v["total_goals"] for v in views]),
+        "first_half_goals_avg": avg([v["first_half_goals"] for v in half_views]),
+        "second_half_goals_avg": avg([v["second_half_goals"] for v in half_views]),
 
-    X_train = X.iloc[:split]
-    X_test = X.iloc[split:]
-    y_train = y.iloc[:split]
-    y_test = y.iloc[split:]
+        "first_half_btts_rate": rate([v["first_half_btts"] for v in half_views]),
+        "second_half_btts_rate": rate([v["second_half_btts"] for v in half_views]),
 
-    model = HistGradientBoostingClassifier(
-        max_iter=350,
-        learning_rate=0.035,
-        max_leaf_nodes=24,
-        l2_regularization=0.15,
-        random_state=42
+        "home_scores_both_halves_rate": rate([v["home_scores_both_halves"] for v in half_views]),
+        "away_scores_both_halves_rate": rate([v["away_scores_both_halves"] for v in half_views]),
+
+        "home_wins_both_halves_rate": rate([v["home_wins_both_halves"] for v in half_views]),
+        "away_wins_both_halves_rate": rate([v["away_wins_both_halves"] for v in half_views]),
+
+        "goal_range_0_1_rate": rate([v["goal_range_0_1"] for v in views]),
+        "goal_range_2_3_rate": rate([v["goal_range_2_3"] for v in views]),
+        "goal_range_4_5_rate": rate([v["goal_range_4_5"] for v in views]),
+        "goal_range_6_plus_rate": rate([v["goal_range_6_plus"] for v in views]),
+
+        "both_halves_over_1_5_rate": rate([v["both_halves_over_1_5"] for v in half_views]),
+        "both_halves_under_1_5_rate": rate([v["both_halves_under_1_5"] for v in half_views]),
+
+        "total_corners_avg": avg([v["total_corners"] for v in corner_views]),
+        "corners_over_7_5_rate": rate([v["corners_over_7_5"] for v in corner_views]),
+        "corners_over_8_5_rate": rate([v["corners_over_8_5"] for v in corner_views]),
+        "corners_over_9_5_rate": rate([v["corners_over_9_5"] for v in corner_views]),
+        "corners_under_10_5_rate": rate([v["corners_under_10_5"] for v in corner_views]),
+        "corners_under_11_5_rate": rate([v["corners_under_11_5"] for v in corner_views]),
+    }
+
+
+def profile_from_team_views(views: List[Dict[str, Any]]) -> Dict[str, Any]:
+    half_views = [v for v in views if v["has_half"]]
+    corner_views = [v for v in views if v["has_corners"]]
+
+    return {
+        "sample_size": len(views),
+        "half_sample_size": len(half_views),
+        "corner_sample_size": len(corner_views),
+
+        "goals_for_avg": avg([v["goals_for"] for v in views]),
+        "goals_against_avg": avg([v["goals_against"] for v in views]),
+
+        "ht_for_avg": avg([v["ht_for"] for v in half_views]),
+        "ht_against_avg": avg([v["ht_against"] for v in half_views]),
+        "sh_for_avg": avg([v["sh_for"] for v in half_views]),
+        "sh_against_avg": avg([v["sh_against"] for v in half_views]),
+
+        "scores_first_half_rate": rate([v["scores_first_half"] for v in half_views]),
+        "scores_second_half_rate": rate([v["scores_second_half"] for v in half_views]),
+        "scores_both_halves_rate": rate([v["scores_both_halves"] for v in half_views]),
+
+        "wins_first_half_rate": rate([v["wins_first_half"] for v in half_views]),
+        "wins_second_half_rate": rate([v["wins_second_half"] for v in half_views]),
+        "wins_both_halves_rate": rate([v["wins_both_halves"] for v in half_views]),
+
+        "concedes_first_half_rate": rate([v["concedes_first_half"] for v in half_views]),
+        "concedes_second_half_rate": rate([v["concedes_second_half"] for v in half_views]),
+        "concedes_both_halves_rate": rate([v["concedes_both_halves"] for v in half_views]),
+
+        "goal_range_0_1_rate": rate([v["goal_range_0_1"] for v in views]),
+        "goal_range_2_3_rate": rate([v["goal_range_2_3"] for v in views]),
+        "goal_range_4_5_rate": rate([v["goal_range_4_5"] for v in views]),
+        "goal_range_6_plus_rate": rate([v["goal_range_6_plus"] for v in views]),
+
+        "both_halves_over_1_5_rate": rate([v["both_halves_over_1_5"] for v in half_views]),
+        "both_halves_under_1_5_rate": rate([v["both_halves_under_1_5"] for v in half_views]),
+
+        "corners_for_avg": avg([v["corners_for"] for v in corner_views]),
+        "corners_against_avg": avg([v["corners_against"] for v in corner_views]),
+        "total_corners_avg": avg([v["total_corners"] for v in corner_views]),
+
+        "corners_over_7_5_rate": rate([v["corners_over_7_5"] for v in corner_views]),
+        "corners_over_8_5_rate": rate([v["corners_over_8_5"] for v in corner_views]),
+        "corners_over_9_5_rate": rate([v["corners_over_9_5"] for v in corner_views]),
+        "corners_under_10_5_rate": rate([v["corners_under_10_5"] for v in corner_views]),
+        "corners_under_11_5_rate": rate([v["corners_under_11_5"] for v in corner_views]),
+
+        "shots_for_avg": avg([v["shots_for"] for v in views]),
+        "shots_against_avg": avg([v["shots_against"] for v in views]),
+        "shots_on_for_avg": avg([v["shots_on_for"] for v in views]),
+        "possession_avg": avg([v["possession"] for v in views]),
+    }
+
+
+def build_features(fixture: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    home_team = fixture["home_team"]
+    away_team = fixture["away_team"]
+    tournament_id = fixture.get("tournament_id")
+
+    home_views = []
+    away_views = []
+    league_views = []
+    all_relevant_match_views = []
+
+    for row in history:
+        mv = build_match_view(row)
+        if mv:
+            all_relevant_match_views.append(mv)
+
+        hv = build_team_view(row, home_team)
+        if hv:
+            home_views.append(hv)
+
+        av = build_team_view(row, away_team)
+        if av:
+            away_views.append(av)
+
+        if tournament_id is not None and row.get("tournament_id") == tournament_id and mv:
+            league_views.append(mv)
+
+    home_views = home_views[:MAX_TEAM_PROFILE_MATCHES]
+    away_views = away_views[:MAX_TEAM_PROFILE_MATCHES]
+
+    return {
+        "fixture": fixture,
+        "home": profile_from_team_views(home_views),
+        "away": profile_from_team_views(away_views),
+        "league": profile_from_match_views(league_views),
+        "all": profile_from_match_views(all_relevant_match_views),
+        "input_sample_size": len(history),
+    }
+
+
+# ============================================================
+# MARKET ENGINE
+# ============================================================
+
+def sample_quality(features: Dict[str, Any], market_family: str) -> float:
+    home_n = int(features["home"]["sample_size"])
+    away_n = int(features["away"]["sample_size"])
+    league_n = int(features["league"]["sample_size"])
+
+    home_half_n = int(features["home"]["half_sample_size"])
+    away_half_n = int(features["away"]["half_sample_size"])
+    league_half_n = int(features["league"]["half_sample_size"])
+
+    home_corner_n = int(features["home"]["corner_sample_size"])
+    away_corner_n = int(features["away"]["corner_sample_size"])
+    league_corner_n = int(features["league"]["corner_sample_size"])
+
+    if market_family == "corners":
+        team_part = min(home_corner_n, away_corner_n) / 10.0
+        league_part = league_corner_n / 40.0
+    elif market_family in {"half_btts", "team_halves_goal", "team_halves_result", "both_halves_goals"}:
+        team_part = min(home_half_n, away_half_n) / 10.0
+        league_part = league_half_n / 40.0
+    else:
+        team_part = min(home_n, away_n) / 10.0
+        league_part = league_n / 50.0
+
+    return clamp((team_part * 0.70) + (league_part * 0.30))
+
+
+def make_candidate(
+    features: Dict[str, Any],
+    code: str,
+    raw_score: float,
+    reason: str,
+) -> Dict[str, Any]:
+    fixture = features["fixture"]
+    meta = MARKET_MAP[code]
+
+    quality = sample_quality(features, meta["market_type"])
+    final_score = clamp((raw_score * 0.86) + (quality * 0.14))
+    selection_score = clamp(final_score + MARKET_PRIORITY_BONUS.get(code, 0.0))
+
+    return {
+        "event_id": fixture["event_id"],
+        "start_utc": fixture.get("start_utc"),
+        "start_time_utc": fixture.get("start_time_utc"),
+
+        "home_team": fixture.get("home_team"),
+        "away_team": fixture.get("away_team"),
+
+        "tournament_id": fixture.get("tournament_id"),
+        "tournament_name": fixture.get("tournament_name"),
+        "country": fixture.get("country"),
+
+        "market_type": meta["market_type"],
+        "selection": meta["selection"],
+        "market_key": meta["market_key"],
+        "market_name": meta["market_name"],
+        "selection_key": meta["selection_key"],
+        "selection_name": meta["selection_name"],
+
+        "confidence_score": round(final_score, 4),
+        "selection_score": round(selection_score, 4),
+        "confidence_label": confidence_label(final_score),
+        "model_version": MODEL_VERSION,
+        "reason_text": reason,
+
+        "input_sample_size": int(features["input_sample_size"]),
+        "home_sample_size": int(features["home"]["sample_size"]),
+        "away_sample_size": int(features["away"]["sample_size"]),
+        "league_sample_size": int(features["league"]["sample_size"]),
+    }
+
+
+def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
+    h = features["home"]
+    a = features["away"]
+    l = features["league"]
+    allp = features["all"]
+
+    candidates = []
+
+    # 1. yarı KG
+    raw = (
+        val(h["scores_first_half_rate"], 0.35) * 0.18
+        + val(a["scores_first_half_rate"], 0.30) * 0.18
+        + val(h["concedes_first_half_rate"], 0.35) * 0.14
+        + val(a["concedes_first_half_rate"], 0.35) * 0.14
+        + val(l["first_half_btts_rate"], 0.22) * 0.16
+        + min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.7, 1.0) * 0.20
+    )
+    candidates.append(make_candidate(
+        features,
+        "first_half_btts_yes",
+        raw,
+        "İki takımın ilk yarı gol bulma ve ilk yarı gol yeme profili 1. yarı karşılıklı golü destekliyor.",
+    ))
+
+    # 2. yarı KG
+    raw = (
+        val(h["scores_second_half_rate"], 0.40) * 0.18
+        + val(a["scores_second_half_rate"], 0.35) * 0.18
+        + val(h["concedes_second_half_rate"], 0.40) * 0.14
+        + val(a["concedes_second_half_rate"], 0.40) * 0.14
+        + val(l["second_half_btts_rate"], 0.25) * 0.16
+        + min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 1.9, 1.0) * 0.20
+    )
+    candidates.append(make_candidate(
+        features,
+        "second_half_btts_yes",
+        raw,
+        "İki takımın ikinci yarı gol bulma/yeme profili 2. yarı karşılıklı golü destekliyor.",
+    ))
+
+    # Ev sahibi iki yarıda da gol
+    raw = (
+        val(h["scores_both_halves_rate"], 0.22) * 0.30
+        + val(a["concedes_both_halves_rate"], 0.18) * 0.22
+        + min(val(h["goals_for_avg"], 1.35) / 2.8, 1.0) * 0.18
+        + min(val(a["goals_against_avg"], 1.25) / 2.6, 1.0) * 0.16
+        + min((val(h["ht_for_avg"], 0.45) + val(h["sh_for_avg"], 0.55)) / 1.8, 1.0) * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "home_scores_both_halves",
+        raw,
+        "Ev sahibinin iki yarıda da gol bulma ve rakibin iki yarıda gol yeme profili destekliyor.",
+    ))
+
+    # Deplasman iki yarıda da gol
+    raw = (
+        val(a["scores_both_halves_rate"], 0.18) * 0.30
+        + val(h["concedes_both_halves_rate"], 0.18) * 0.22
+        + min(val(a["goals_for_avg"], 1.20) / 2.8, 1.0) * 0.18
+        + min(val(h["goals_against_avg"], 1.20) / 2.6, 1.0) * 0.16
+        + min((val(a["ht_for_avg"], 0.40) + val(a["sh_for_avg"], 0.50)) / 1.8, 1.0) * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "away_scores_both_halves",
+        raw,
+        "Deplasmanın iki yarıda da gol bulma ve ev sahibinin iki yarıda gol yeme profili destekliyor.",
+    ))
+
+    # Ev sahibi iki yarıyı da kazanır
+    raw = (
+        val(h["wins_both_halves_rate"], 0.10) * 0.34
+        + val(a["wins_both_halves_rate"], 0.08) * 0.04
+        + min(val(h["goals_for_avg"], 1.45) / 3.2, 1.0) * 0.20
+        + min(val(a["goals_against_avg"], 1.35) / 3.0, 1.0) * 0.18
+        + val(h["wins_first_half_rate"], 0.25) * 0.12
+        + val(h["wins_second_half_rate"], 0.28) * 0.12
+    )
+    candidates.append(make_candidate(
+        features,
+        "home_wins_both_halves",
+        raw,
+        "Ev sahibinin iki yarıda üstünlük kurma, gol üretme ve rakibin zayıf savunma profili destekliyor.",
+    ))
+
+    # Deplasman iki yarıyı da kazanır
+    raw = (
+        val(a["wins_both_halves_rate"], 0.08) * 0.34
+        + min(val(a["goals_for_avg"], 1.30) / 3.2, 1.0) * 0.20
+        + min(val(h["goals_against_avg"], 1.30) / 3.0, 1.0) * 0.18
+        + val(a["wins_first_half_rate"], 0.22) * 0.14
+        + val(a["wins_second_half_rate"], 0.25) * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "away_wins_both_halves",
+        raw,
+        "Deplasmanın iki yarıda üstünlük kurma ve ev sahibinin gol yeme profili destekliyor.",
+    ))
+
+    # Gol aralığı 0-1
+    low_goal_signal = 1.0 - min((val(h["goals_for_avg"], 1.2) + val(a["goals_for_avg"], 1.1)) / 3.2, 1.0)
+    raw = (
+        val(h["goal_range_0_1_rate"], 0.18) * 0.22
+        + val(a["goal_range_0_1_rate"], 0.18) * 0.22
+        + val(l["goal_range_0_1_rate"], 0.18) * 0.18
+        + low_goal_signal * 0.28
+        + val(allp["goal_range_0_1_rate"], 0.18) * 0.10
+    )
+    candidates.append(make_candidate(
+        features,
+        "total_goals_0_1",
+        raw,
+        "Düşük gol temposu ve 0-1 gol aralığı geçmişi bu aralığı destekliyor.",
+    ))
+
+    # Gol aralığı 2-3
+    balanced_goal_signal = 1.0 - min(abs((val(h["goals_for_avg"], 1.2) + val(a["goals_for_avg"], 1.1)) - 2.6) / 2.6, 1.0)
+    raw = (
+        val(h["goal_range_2_3_rate"], 0.42) * 0.24
+        + val(a["goal_range_2_3_rate"], 0.42) * 0.24
+        + val(l["goal_range_2_3_rate"], 0.42) * 0.18
+        + balanced_goal_signal * 0.24
+        + val(allp["goal_range_2_3_rate"], 0.42) * 0.10
+    )
+    candidates.append(make_candidate(
+        features,
+        "total_goals_2_3",
+        raw,
+        "Maçın gol beklentisi 2-3 gol bandına yakın görünüyor.",
+    ))
+
+    # Gol aralığı 4-5
+    high_goal_signal = min((val(h["goals_for_avg"], 1.4) + val(a["goals_for_avg"], 1.3)) / 4.1, 1.0)
+    concede_signal = min((val(h["goals_against_avg"], 1.2) + val(a["goals_against_avg"], 1.2)) / 3.8, 1.0)
+    raw = (
+        val(h["goal_range_4_5_rate"], 0.20) * 0.22
+        + val(a["goal_range_4_5_rate"], 0.20) * 0.22
+        + val(l["goal_range_4_5_rate"], 0.20) * 0.16
+        + high_goal_signal * 0.22
+        + concede_signal * 0.18
+    )
+    candidates.append(make_candidate(
+        features,
+        "total_goals_4_5",
+        raw,
+        "Yüksek gol üretimi ve savunma açıklığı 4-5 gol aralığını destekliyor.",
+    ))
+
+    # Gol aralığı 6+
+    very_high_goal_signal = min((val(h["goals_for_avg"], 1.5) + val(a["goals_for_avg"], 1.4)) / 5.0, 1.0)
+    raw = (
+        val(h["goal_range_6_plus_rate"], 0.05) * 0.25
+        + val(a["goal_range_6_plus_rate"], 0.05) * 0.25
+        + val(l["goal_range_6_plus_rate"], 0.05) * 0.15
+        + very_high_goal_signal * 0.20
+        + min((val(h["goals_against_avg"], 1.3) + val(a["goals_against_avg"], 1.3)) / 4.6, 1.0) * 0.15
+    )
+    candidates.append(make_candidate(
+        features,
+        "total_goals_6_plus",
+        raw,
+        "Çok yüksek gol profili ve açık savunma sinyali 6+ gol aralığını destekliyor.",
+    ))
+
+    # İki yarıda 1.5 üst
+    raw = (
+        val(h["both_halves_over_1_5_rate"], 0.12) * 0.22
+        + val(a["both_halves_over_1_5_rate"], 0.12) * 0.22
+        + val(l["both_halves_over_1_5_rate"], 0.12) * 0.16
+        + min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.7, 1.0) * 0.16
+        + min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 1.9, 1.0) * 0.16
+        + high_goal_signal * 0.08
+    )
+    candidates.append(make_candidate(
+        features,
+        "both_halves_over_1_5",
+        raw,
+        "İki yarının da gollü geçme profili iki yarıda 1.5 üstü destekliyor.",
+    ))
+
+    # İki yarıda 1.5 alt
+    raw = (
+        val(h["both_halves_under_1_5_rate"], 0.58) * 0.24
+        + val(a["both_halves_under_1_5_rate"], 0.58) * 0.24
+        + val(l["both_halves_under_1_5_rate"], 0.58) * 0.18
+        + (1.0 - min((val(h["ht_for_avg"], 0.45) + val(a["ht_for_avg"], 0.40)) / 1.9, 1.0)) * 0.15
+        + (1.0 - min((val(h["sh_for_avg"], 0.55) + val(a["sh_for_avg"], 0.50)) / 2.1, 1.0)) * 0.15
+        + low_goal_signal * 0.04
+    )
+    candidates.append(make_candidate(
+        features,
+        "both_halves_under_1_5",
+        raw,
+        "İki yarıda da düşük gol temposu iki yarıda 1.5 altı destekliyor.",
+    ))
+
+    # Korner beklentisi
+    expected_corners = (
+        val(h["corners_for_avg"], 4.5)
+        + val(a["corners_for_avg"], 4.2)
+        + val(h["corners_against_avg"], 4.2) * 0.30
+        + val(a["corners_against_avg"], 4.2) * 0.30
     )
 
-    model.fit(X_train, y_train)
+    shot_tempo = min((val(h["shots_for_avg"], 10.0) + val(a["shots_for_avg"], 10.0)) / 30.0, 1.0)
+    league_corner_avg = val(l["total_corners_avg"], val(allp["total_corners_avg"], 9.0))
 
-    preds = model.predict(X_test)
-    probs = model.predict_proba(X_test)
+    raw = (
+        val(h["corners_over_7_5_rate"], 0.65) * 0.18
+        + val(a["corners_over_7_5_rate"], 0.65) * 0.18
+        + val(l["corners_over_7_5_rate"], 0.65) * 0.16
+        + min(expected_corners / 10.5, 1.0) * 0.32
+        + shot_tempo * 0.16
+    )
+    candidates.append(make_candidate(
+        features,
+        "corners_over_7_5",
+        raw,
+        "Korner üretimi, rakibe verilen korner ve maç temposu 7.5 üst korneri destekliyor.",
+    ))
 
-    print("\n==============================")
-    print("MODEL:", target_col)
-    print("Accuracy:", round(accuracy_score(y_test, preds), 4))
+    raw = (
+        val(h["corners_over_8_5_rate"], 0.55) * 0.18
+        + val(a["corners_over_8_5_rate"], 0.55) * 0.18
+        + val(l["corners_over_8_5_rate"], 0.55) * 0.16
+        + min(expected_corners / 11.5, 1.0) * 0.32
+        + shot_tempo * 0.16
+    )
+    candidates.append(make_candidate(
+        features,
+        "corners_over_8_5",
+        raw,
+        "Korner üretimi ve şut temposu 8.5 üst korneri destekliyor.",
+    ))
+
+    raw = (
+        val(h["corners_over_9_5_rate"], 0.45) * 0.18
+        + val(a["corners_over_9_5_rate"], 0.45) * 0.18
+        + val(l["corners_over_9_5_rate"], 0.45) * 0.16
+        + min(expected_corners / 12.5, 1.0) * 0.34
+        + shot_tempo * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "corners_over_9_5",
+        raw,
+        "Toplam korner beklentisi yüksek; 9.5 üst korner destekleniyor.",
+    ))
+
+    low_corner_signal_105 = 1.0 - min(expected_corners / 12.5, 1.0)
+    raw = (
+        val(h["corners_under_10_5_rate"], 0.55) * 0.20
+        + val(a["corners_under_10_5_rate"], 0.55) * 0.20
+        + val(l["corners_under_10_5_rate"], 0.55) * 0.18
+        + low_corner_signal_105 * 0.28
+        + (1.0 - min(league_corner_avg / 11.5, 1.0)) * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "corners_under_10_5",
+        raw,
+        "Korner beklentisi yüksek çizgi için sınırlı; 10.5 alt korner destekleniyor.",
+    ))
+
+    low_corner_signal_115 = 1.0 - min(expected_corners / 13.5, 1.0)
+    raw = (
+        val(h["corners_under_11_5_rate"], 0.65) * 0.20
+        + val(a["corners_under_11_5_rate"], 0.65) * 0.20
+        + val(l["corners_under_11_5_rate"], 0.65) * 0.18
+        + low_corner_signal_115 * 0.28
+        + (1.0 - min(league_corner_avg / 12.5, 1.0)) * 0.14
+    )
+    candidates.append(make_candidate(
+        features,
+        "corners_under_11_5",
+        raw,
+        "Korner hacmi 11.5 çizgisi için sınırlı kaldığından alt korner destekleniyor.",
+    ))
+
+    return candidates
+
+
+def select_best_prediction(features: Dict[str, Any], min_confidence: float) -> Optional[Dict[str, Any]]:
+    candidates = generate_candidates(features)
+
+    valid = [
+        c for c in candidates
+        if c["confidence_score"] >= min_confidence
+        and c["selection_score"] >= min_confidence
+    ]
+
+    if not valid:
+        return None
+
+    valid.sort(key=lambda x: x["selection_score"], reverse=True)
+    best = valid[0]
+
+    best["reason_text"] = (
+        best["reason_text"]
+        + f" Confidence: {best['confidence_score']}. Seçim skoru: {best['selection_score']}."
+    )
+
+    return best
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def print_config() -> None:
+    print("[AYARLAR]")
+    print(f"MODEL_VERSION       : {MODEL_VERSION}")
+    print(f"LOOKBACK_DAYS       : {LOOKBACK_DAYS}")
+    print(f"TARGET_DAYS_AHEAD   : {TARGET_DAYS_AHEAD}")
+    print(f"MIN_TEAM_MATCHES    : {MIN_TEAM_MATCHES}")
+    print(f"MIN_LEAGUE_MATCHES  : {MIN_LEAGUE_MATCHES}")
+    print(f"MIN_CONFIDENCE      : {MIN_CONFIDENCE}")
+    print("ODDS_USAGE          : disabled")
+    print("MARKETS             : halves, goal_range, corners")
+
+
+def process_fixture(db: DB, fixture: Dict[str, Any]) -> bool:
+    event_id = fixture["event_id"]
+    home_team = fixture["home_team"]
+    away_team = fixture["away_team"]
+    tournament_id = fixture.get("tournament_id")
+
+    print(f"\n[MAÇ] {home_team} - {away_team} | event_id={event_id}")
+
+    history = db.get_history(
+        home_team=home_team,
+        away_team=away_team,
+        tournament_id=tournament_id,
+        lookback_days=LOOKBACK_DAYS,
+    )
+
+    if not history:
+        print("[ATLANDI] Geçmiş veri yok.")
+        return False
+
+    features = build_features(fixture, history)
+
+    home_n = features["home"]["sample_size"]
+    away_n = features["away"]["sample_size"]
+    league_n = features["league"]["sample_size"]
+
+    home_half_n = features["home"]["half_sample_size"]
+    away_half_n = features["away"]["half_sample_size"]
+    home_corner_n = features["home"]["corner_sample_size"]
+    away_corner_n = features["away"]["corner_sample_size"]
+
+    print(
+        f"[ÖRNEKLEM] input={features['input_sample_size']} "
+        f"| home={home_n} | away={away_n} | league={league_n} "
+        f"| half={home_half_n}/{away_half_n} | corner={home_corner_n}/{away_corner_n}"
+    )
+
+    if home_n < MIN_TEAM_MATCHES:
+        print(f"[ATLANDI] Ev sahibi örneklem düşük: {home_n}")
+        return False
+
+    if away_n < MIN_TEAM_MATCHES:
+        print(f"[ATLANDI] Deplasman örneklem düşük: {away_n}")
+        return False
+
+    if league_n < MIN_LEAGUE_MATCHES:
+        print(f"[UYARI] Lig örneklemi düşük: {league_n}. Takım verisiyle devam ediliyor.")
+
+    prediction = select_best_prediction(features, MIN_CONFIDENCE)
+
+    if prediction is None:
+        print("[ATLANDI] Yeterli confidence veren özel market yok.")
+        return False
+
+    db.upsert_prediction(prediction)
+
+    print(
+        "[YAZILDI] "
+        f"{prediction['market_name']} / {prediction['selection_name']} "
+        f"| confidence={prediction['confidence_score']} "
+        f"| selection_score={prediction['selection_score']} "
+        f"| label={prediction['confidence_label']}"
+    )
+    print(f"[NEDEN] {prediction['reason_text']}")
+
+    return True
+
+
+def main() -> None:
+    print_config()
+
+    db = DB(DB_CONFIG)
+
+    total_fixtures = 0
+    total_predictions = 0
+    total_skipped = 0
 
     try:
-        print("LogLoss:", round(log_loss(y_test, probs), 4))
-    except Exception:
-        pass
+        db.connect()
 
-    print(classification_report(y_test, preds))
+        fixtures = db.get_target_fixtures(days_ahead=TARGET_DAYS_AHEAD)
+        total_fixtures = len(fixtures)
 
-    joblib.dump(
-        {
-            "model": model,
-            "feature_cols": feature_cols,
-            "target_col": target_col,
-        },
-        f"{MODEL_DIR}/{target_col}.joblib"
-    )
+        print(f"\n[TAHMİN] İşlenecek fikstür sayısı: {total_fixtures}")
 
+        if total_fixtures == 0:
+            print("[SONUÇ] Bugün/yarın için başlamamış fikstür bulunamadı.")
+            return
 
-def main():
-    df = load_finished_matches()
-    df = add_targets(df)
-    df = add_form_features(df)
-    df, feature_cols = prepare_features(df)
+        for fixture in fixtures:
+            ok = process_fixture(db, fixture)
 
-    targets = [
-        "target_fh_btts",
-        "target_sh_btts",
-        "target_home_scores_both_halves",
-        "target_away_scores_both_halves",
-        "target_home_wins_both_halves",
-        "target_away_wins_both_halves",
-        "target_goal_range",
-        "target_both_halves_over15",
-        "target_both_halves_under15",
-        "target_corners_over85",
-        "target_corners_over95",
-        "target_corners_over105",
-        "target_home_corners_over45",
-        "target_away_corners_over45",
-        "target_corner_range",
-    ]
+            if ok:
+                total_predictions += 1
+            else:
+                total_skipped += 1
 
-    for target in targets:
-        train_single_model(df, feature_cols, target)
+        print("\n[SONUÇ]")
+        print(f"Toplam fikstür     : {total_fixtures}")
+        print(f"Üretilen tahmin    : {total_predictions}")
+        print(f"Atlanan maç        : {total_skipped}")
+        print("[BİTTİ] Özel market tahmin üretimi tamamlandı.")
+
+    except mysql.connector.Error as e:
+        print(f"[MYSQL HATA] {e}")
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"[KRİTİK HATA] Tahmin üretimi durdu: {e}")
+        sys.exit(1)
+
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
