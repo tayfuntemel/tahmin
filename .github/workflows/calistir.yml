@@ -34,8 +34,22 @@ jobs:
       TARGET_DAYS_AHEAD: "1"
       MIN_TEAM_MATCHES: "5"
       MIN_LEAGUE_MATCHES: "10"
-      MIN_CONFIDENCE: "0.68"
-      MODEL_VERSION: "v1_stat_signal_no_odds_single_file"
+      MIN_CONFIDENCE: "0.66"
+      MODEL_VERSION: "v6_no_corners_selective_market_floor_2026_05_15"
+
+      # İyi giden 3 market daha ulaşılabilir; diğerleri daha seçici.
+      MIN_SECOND_HALF_BTTS: "0.66"
+      MIN_TOTAL_GOALS_2_3: "0.66"
+      MIN_AWAY_SCORES_BOTH_HALVES: "0.67"
+      MIN_FIRST_HALF_BTTS: "0.70"
+      MIN_HOME_SCORES_BOTH_HALVES: "0.70"
+      MIN_HOME_WINS_BOTH_HALVES: "0.76"
+      MIN_AWAY_WINS_BOTH_HALVES: "0.76"
+      MIN_TOTAL_GOALS_0_1: "0.70"
+      MIN_TOTAL_GOALS_4_5: "0.72"
+      MIN_TOTAL_GOALS_6_PLUS: "0.78"
+      MIN_BOTH_HALVES_OVER_1_5: "0.73"
+      MIN_BOTH_HALVES_UNDER_1_5: "0.72"
 
       PYTHONUNBUFFERED: "1"
 
