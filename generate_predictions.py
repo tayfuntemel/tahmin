@@ -16,7 +16,6 @@ Oran kullanmayan özel futbol tahmin motoru.
 - toplam gol aralığı: 0-1, 2-3, 4-5, 6+
 - iki yarıda 1.5 üst
 - iki yarıda 1.5 alt
-- toplam korner üst/alt
 
 Kullanmaz:
 - bahis oranları
@@ -24,8 +23,9 @@ Kullanmaz:
 - stake market isimleri
 - şut/faul/kart marketleri
 
-Bu sürümde korner marketlerine limit yoktur.
-Kornerlerin seçilmesi zorlaştırılmış, diğer özel marketlerin sinyal ağırlığı artırılmıştır.
+Bu sürümde korner marketleri tamamen kapalıdır.
+Maç başına tahmin üretmek için global eşik yanında market bazlı alt sınır kullanılır.
+Amaç: her maça tahmin basmak değil, sinyal güçlü olduğunda az ve seçici tahmin üretmek.
 """
 
 import os
@@ -39,7 +39,7 @@ import mysql.connector
 # CONFIG
 # ============================================================
 
-MODEL_VERSION = os.getenv("MODEL_VERSION", "v5_custom_halves_goalrange_corners_balanced_no_odds")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v6_no_corners_selective_market_floor_2026_05_15")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -54,7 +54,7 @@ TARGET_DAYS_AHEAD = int(os.getenv("TARGET_DAYS_AHEAD", "1"))
 
 MIN_TEAM_MATCHES = int(os.getenv("MIN_TEAM_MATCHES", "5"))
 MIN_LEAGUE_MATCHES = int(os.getenv("MIN_LEAGUE_MATCHES", "10"))
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.58"))
+MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 
 MAX_TEAM_PROFILE_MATCHES = int(os.getenv("MAX_TEAM_PROFILE_MATCHES", "20"))
 
@@ -160,75 +160,29 @@ MARKET_MAP = {
         "selection_key": "under_1_5",
         "selection_name": "Evet",
     },
-    "corners_over_7_5": {
-        "market_type": "corners",
-        "selection": "corners_over_7_5",
-        "market_key": "total_corners",
-        "market_name": "Toplam Korner",
-        "selection_key": "over_7_5",
-        "selection_name": "7.5 Üst",
-    },
-    "corners_over_8_5": {
-        "market_type": "corners",
-        "selection": "corners_over_8_5",
-        "market_key": "total_corners",
-        "market_name": "Toplam Korner",
-        "selection_key": "over_8_5",
-        "selection_name": "8.5 Üst",
-    },
-    "corners_over_9_5": {
-        "market_type": "corners",
-        "selection": "corners_over_9_5",
-        "market_key": "total_corners",
-        "market_name": "Toplam Korner",
-        "selection_key": "over_9_5",
-        "selection_name": "9.5 Üst",
-    },
-    "corners_under_10_5": {
-        "market_type": "corners",
-        "selection": "corners_under_10_5",
-        "market_key": "total_corners",
-        "market_name": "Toplam Korner",
-        "selection_key": "under_10_5",
-        "selection_name": "10.5 Alt",
-    },
-    "corners_under_11_5": {
-        "market_type": "corners",
-        "selection": "corners_under_11_5",
-        "market_key": "total_corners",
-        "market_name": "Toplam Korner",
-        "selection_key": "under_11_5",
-        "selection_name": "11.5 Alt",
-    },
 }
 
 
-# Korner limiti yok. Bunun yerine skor dengesi var.
 # Pozitif: seçilme şansı artar.
 # Negatif: seçilme şansı azalır.
+# İyi giden marketler: 2. yarı KG, toplam gol 2-3, deplasman iki yarıda da gol.
 MARKET_PRIORITY_BONUS = {
-    "first_half_btts_yes": 0.045,
-    "second_half_btts_yes": 0.050,
+    "first_half_btts_yes": 0.010,
+    "second_half_btts_yes": 0.060,
 
-    "home_scores_both_halves": 0.050,
-    "away_scores_both_halves": 0.050,
+    "home_scores_both_halves": 0.010,
+    "away_scores_both_halves": 0.065,
 
-    "home_wins_both_halves": 0.060,
-    "away_wins_both_halves": 0.060,
+    "home_wins_both_halves": -0.020,
+    "away_wins_both_halves": -0.020,
 
-    "total_goals_0_1": 0.020,
-    "total_goals_2_3": 0.040,
-    "total_goals_4_5": 0.050,
-    "total_goals_6_plus": 0.060,
+    "total_goals_0_1": 0.000,
+    "total_goals_2_3": 0.065,
+    "total_goals_4_5": 0.005,
+    "total_goals_6_plus": -0.030,
 
-    "both_halves_over_1_5": 0.060,
-    "both_halves_under_1_5": 0.020,
-
-    "corners_over_7_5": -0.055,
-    "corners_over_8_5": -0.050,
-    "corners_over_9_5": -0.045,
-    "corners_under_10_5": -0.060,
-    "corners_under_11_5": -0.065,
+    "both_halves_over_1_5": 0.000,
+    "both_halves_under_1_5": -0.005,
 }
 
 
@@ -238,8 +192,29 @@ MARKET_TYPE_ADJUSTMENT = {
     "team_halves_result": 0.040,
     "goal_range": 0.025,
     "both_halves_goals": 0.030,
-    "corners": -0.055,
 }
+
+
+# Market bazlı alt sınır. Global MIN_CONFIDENCE bunun altında kalsa bile bu sınır geçerli olur.
+# Ana üçlü daha ulaşılabilir, diğerleri daha seçici tutulur.
+MARKET_MIN_CONFIDENCE = {
+    "second_half_btts_yes": float(os.getenv("MIN_SECOND_HALF_BTTS", "0.66")),
+    "total_goals_2_3": float(os.getenv("MIN_TOTAL_GOALS_2_3", "0.66")),
+    "away_scores_both_halves": float(os.getenv("MIN_AWAY_SCORES_BOTH_HALVES", "0.67")),
+
+    "first_half_btts_yes": float(os.getenv("MIN_FIRST_HALF_BTTS", "0.70")),
+    "home_scores_both_halves": float(os.getenv("MIN_HOME_SCORES_BOTH_HALVES", "0.70")),
+    "home_wins_both_halves": float(os.getenv("MIN_HOME_WINS_BOTH_HALVES", "0.76")),
+    "away_wins_both_halves": float(os.getenv("MIN_AWAY_WINS_BOTH_HALVES", "0.76")),
+    "total_goals_0_1": float(os.getenv("MIN_TOTAL_GOALS_0_1", "0.70")),
+    "total_goals_4_5": float(os.getenv("MIN_TOTAL_GOALS_4_5", "0.72")),
+    "total_goals_6_plus": float(os.getenv("MIN_TOTAL_GOALS_6_PLUS", "0.78")),
+    "both_halves_over_1_5": float(os.getenv("MIN_BOTH_HALVES_OVER_1_5", "0.73")),
+    "both_halves_under_1_5": float(os.getenv("MIN_BOTH_HALVES_UNDER_1_5", "0.72")),
+}
+
+# Bu motor korner üretmez.
+DISABLED_MARKET_TYPES = {"corners"}
 
 
 # ============================================================
@@ -947,11 +922,7 @@ def make_candidate(
 
     quality = sample_quality(features, meta["market_type"])
 
-    # Kornerler daha stabil veri verdiği için burada final skorda daha az örneklem desteği alıyor.
-    if meta["market_type"] == "corners":
-        final_score = clamp((raw_score * 0.90) + (quality * 0.10))
-    else:
-        final_score = clamp((raw_score * 0.84) + (quality * 0.16))
+    final_score = clamp((raw_score * 0.84) + (quality * 0.16))
 
     selection_score = clamp(
         final_score
@@ -1191,93 +1162,7 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
         "İki yarıda da düşük gol temposu iki yarıda 1.5 altı destekliyor.",
     ))
 
-    # Korner beklentisi
-    expected_corners = (
-        val(h["corners_for_avg"], 4.2)
-        + val(a["corners_for_avg"], 4.0)
-        + val(h["corners_against_avg"], 4.0) * 0.22
-        + val(a["corners_against_avg"], 4.0) * 0.22
-    )
-
-    shot_tempo = min((val(h["shots_for_avg"], 9.5) + val(a["shots_for_avg"], 9.5)) / 32.0, 1.0)
-    league_corner_avg = val(l["total_corners_avg"], val(allp["total_corners_avg"], 9.0))
-
-    raw = (
-        val(h["corners_over_7_5_rate"], 0.60) * 0.14
-        + val(a["corners_over_7_5_rate"], 0.60) * 0.14
-        + val(l["corners_over_7_5_rate"], 0.60) * 0.12
-        + min(expected_corners / 11.4, 1.0) * 0.34
-        + shot_tempo * 0.12
-        + min(league_corner_avg / 10.8, 1.0) * 0.14
-    )
-    candidates.append(make_candidate(
-        features,
-        "corners_over_7_5",
-        raw,
-        "Korner üretimi, rakibe verilen korner ve maç temposu 7.5 üst korneri destekliyor.",
-    ))
-
-    raw = (
-        val(h["corners_over_8_5_rate"], 0.50) * 0.14
-        + val(a["corners_over_8_5_rate"], 0.50) * 0.14
-        + val(l["corners_over_8_5_rate"], 0.50) * 0.12
-        + min(expected_corners / 12.5, 1.0) * 0.36
-        + shot_tempo * 0.10
-        + min(league_corner_avg / 11.4, 1.0) * 0.14
-    )
-    candidates.append(make_candidate(
-        features,
-        "corners_over_8_5",
-        raw,
-        "Korner üretimi ve şut temposu 8.5 üst korneri destekliyor.",
-    ))
-
-    raw = (
-        val(h["corners_over_9_5_rate"], 0.40) * 0.14
-        + val(a["corners_over_9_5_rate"], 0.40) * 0.14
-        + val(l["corners_over_9_5_rate"], 0.40) * 0.12
-        + min(expected_corners / 13.6, 1.0) * 0.38
-        + shot_tempo * 0.10
-        + min(league_corner_avg / 12.2, 1.0) * 0.12
-    )
-    candidates.append(make_candidate(
-        features,
-        "corners_over_9_5",
-        raw,
-        "Toplam korner beklentisi yüksek; 9.5 üst korner destekleniyor.",
-    ))
-
-    low_corner_signal_105 = 1.0 - min(expected_corners / 11.6, 1.0)
-    raw = (
-        val(h["corners_under_10_5_rate"], 0.52) * 0.18
-        + val(a["corners_under_10_5_rate"], 0.52) * 0.18
-        + val(l["corners_under_10_5_rate"], 0.52) * 0.14
-        + low_corner_signal_105 * 0.28
-        + (1.0 - min(league_corner_avg / 11.0, 1.0)) * 0.14
-        + (1.0 - shot_tempo) * 0.08
-    )
-    candidates.append(make_candidate(
-        features,
-        "corners_under_10_5",
-        raw,
-        "Korner beklentisi yüksek çizgi için sınırlı; 10.5 alt korner destekleniyor.",
-    ))
-
-    low_corner_signal_115 = 1.0 - min(expected_corners / 12.8, 1.0)
-    raw = (
-        val(h["corners_under_11_5_rate"], 0.62) * 0.18
-        + val(a["corners_under_11_5_rate"], 0.62) * 0.18
-        + val(l["corners_under_11_5_rate"], 0.62) * 0.14
-        + low_corner_signal_115 * 0.28
-        + (1.0 - min(league_corner_avg / 12.0, 1.0)) * 0.14
-        + (1.0 - shot_tempo) * 0.08
-    )
-    candidates.append(make_candidate(
-        features,
-        "corners_under_11_5",
-        raw,
-        "Korner hacmi 11.5 çizgisi için sınırlı kaldığından alt korner destekleniyor.",
-    ))
+    # Korner marketleri bilinçli olarak kapalı.
 
     return candidates
 
@@ -1285,11 +1170,14 @@ def generate_candidates(features: Dict[str, Any]) -> List[Dict[str, Any]]:
 def select_best_prediction(features: Dict[str, Any], min_confidence: float) -> Optional[Dict[str, Any]]:
     candidates = generate_candidates(features)
 
-    valid = [
-        c for c in candidates
-        if c["confidence_score"] >= min_confidence
-        and c["selection_score"] >= min_confidence
-    ]
+    valid = []
+    for c in candidates:
+        if c["market_type"] in DISABLED_MARKET_TYPES:
+            continue
+        market_floor = max(min_confidence, MARKET_MIN_CONFIDENCE.get(c["selection"], min_confidence))
+        if c["confidence_score"] >= market_floor and c["selection_score"] >= market_floor:
+            c["market_floor"] = round(market_floor, 4)
+            valid.append(c)
 
     if not valid:
         return None
@@ -1299,7 +1187,7 @@ def select_best_prediction(features: Dict[str, Any], min_confidence: float) -> O
 
     best["reason_text"] = (
         best["reason_text"]
-        + f" Confidence: {best['confidence_score']}. Seçim skoru: {best['selection_score']}."
+        + f" Confidence: {best['confidence_score']}. Seçim skoru: {best['selection_score']}. Market alt sınırı: {best.get('market_floor', min_confidence)}."
     )
 
     return best
@@ -1318,9 +1206,9 @@ def print_config() -> None:
     print(f"MIN_LEAGUE_MATCHES  : {MIN_LEAGUE_MATCHES}")
     print(f"MIN_CONFIDENCE      : {MIN_CONFIDENCE}")
     print("ODDS_USAGE          : disabled")
-    print("MARKETS             : halves, goal_range, corners")
-    print("CORNER_LIMIT        : disabled")
-    print("CORNER_BALANCE      : score_penalty_enabled")
+    print("MARKETS             : halves, goal_range")
+    print("CORNERS             : disabled")
+    print(f"MARKET_FLOORS       : {MARKET_MIN_CONFIDENCE}")
 
 
 def process_fixture(db: DB, fixture: Dict[str, Any]) -> Optional[Dict[str, Any]]:
