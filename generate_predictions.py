@@ -73,11 +73,11 @@ MARKET_MAP = {
         "selection_name": "Evet",
     },
     "second_half_btts_yes": {
-        "market_type": "half_btts",
-        "selection": "second_half_btts_yes",
-        "market_key": "second_half_both_teams_to_score",
-        "market_name": "2. Yarı Karşılıklı Gol",
-        "selection_key": "yes",
+        "market_type": "first_half_goals",
+        "selection": "first_half_over_1_5",
+        "market_key": "first_half_total_goals",
+        "market_name": "İlk Yarı 1.5 Üst",
+        "selection_key": "over_1_5",
         "selection_name": "Evet",
     },
     "home_scores_both_halves": {
