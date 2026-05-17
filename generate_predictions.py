@@ -73,7 +73,7 @@ MARKET_MAP = {
         "selection_name": "Evet",
     },
     "second_half_btts_yes": {
-        "market_type": "first_half_goals",
+        "market_type": "half_btts",
         "selection": "first_half_over_1_5",
         "market_key": "first_half_total_goals",
         "market_name": "İlk Yarı 1.5 Üst",
@@ -199,6 +199,7 @@ MARKET_TYPE_ADJUSTMENT = {
 # Ana üçlü daha ulaşılabilir, diğerleri daha seçici tutulur.
 MARKET_MIN_CONFIDENCE = {
     "second_half_btts_yes": float(os.getenv("MIN_SECOND_HALF_BTTS", "0.66")),
+    "first_half_over_1_5": float(os.getenv("MIN_SECOND_HALF_BTTS", "0.66")),
     "total_goals_2_3": float(os.getenv("MIN_TOTAL_GOALS_2_3", "0.66")),
     "away_scores_both_halves": float(os.getenv("MIN_AWAY_SCORES_BOTH_HALVES", "0.67")),
 
