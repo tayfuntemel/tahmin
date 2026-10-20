@@ -48,6 +48,12 @@ STAT_MAPPING = {
     "totalClearance": "toplam_uzak"
 }
 
+def tr_kucuk(metin):
+    if metin is None:
+        return ""
+    harita = str.maketrans("İIĞÜŞÖÇ", "iığüşöç")
+    return str(metin).translate(harita).lower()
+
 def db_baglantisi_kur():
     try:
         conn = pymysql.connect(
@@ -68,16 +74,15 @@ def sayiya_cevir(deger):
     except:
         return None
 
-# SADECE DURUM 'FT' OLDUĞUNDA KAZANDI / KAYBETTI OLARAK VERİTABANINA İŞLER
-def mac_sonucu_degerlendir(secilen_tahmin, durum_str, ev_skor, dep_skor, ev_iy_skor, dep_iy_skor, ev_korner, dep_korner, ev_sari, dep_sari):
-    durum_up = str(durum_str or '').upper().strip()
+def mac_sonucu_degerlendir(secilen_tahmin, s):
+    durum_up = str(s.get('durum') or '').upper().strip()
     if 'CANCELED' in durum_up or 'POSTPONED' in durum_up:
         return 'IPTAL'
     if 'FT' not in durum_up:
         return 'BEKLIYOR'
 
-    ev_s = sayiya_cevir(ev_skor)
-    dep_s = sayiya_cevir(dep_skor)
+    ev_s = sayiya_cevir(s.get('ev_skor'))
+    dep_s = sayiya_cevir(s.get('dep_skor'))
     if ev_s is None or dep_s is None:
         return 'BEKLIYOR'
 
@@ -85,52 +90,71 @@ def mac_sonucu_degerlendir(secilen_tahmin, durum_str, ev_skor, dep_skor, ev_iy_s
     dep = int(dep_s)
     toplam = ev + dep
 
-    ev_iy_s = sayiya_cevir(ev_iy_skor)
-    dep_iy_s = sayiya_cevir(dep_iy_skor)
+    ev_iy_s = sayiya_cevir(s.get('ev_iy_skor'))
+    dep_iy_s = sayiya_cevir(s.get('dep_iy_skor'))
     has_iy = (ev_iy_s is not None and dep_iy_s is not None)
     ev_iy = int(ev_iy_s) if has_iy else 0
     dep_iy = int(dep_iy_s) if has_iy else 0
 
-    ev_kor_s = sayiya_cevir(ev_korner)
-    dep_kor_s = sayiya_cevir(dep_korner)
+    ev_kor_s = sayiya_cevir(s.get('ev_korner'))
+    dep_kor_s = sayiya_cevir(s.get('dep_korner'))
     has_kor = (ev_kor_s is not None and dep_kor_s is not None)
 
-    ev_sari_s = sayiya_cevir(ev_sari)
-    dep_sari_s = sayiya_cevir(dep_sari)
+    ev_sari_s = sayiya_cevir(s.get('ev_sari'))
+    dep_sari_s = sayiya_cevir(s.get('dep_sari'))
     has_kart = (ev_sari_s is not None and dep_sari_s is not None)
 
-    if secilen_tahmin == 'Maç Sonu 1': return 'KAZANDI' if ev > dep else 'KAYBETTI'
-    if secilen_tahmin == 'Maç Sonu 2': return 'KAZANDI' if dep > ev else 'KAYBETTI'
-    if secilen_tahmin == 'MS 1 ve 1.5 Üst': return 'KAZANDI' if (ev > dep and toplam >= 2) else 'KAYBETTI'
-    if secilen_tahmin == 'MS 2 ve 1.5 Üst': return 'KAZANDI' if (dep > ev and toplam >= 2) else 'KAYBETTI'
-    if secilen_tahmin == '1X ve 1.5 Üst': return 'KAZANDI' if (ev >= dep and toplam >= 2) else 'KAYBETTI'
-    if secilen_tahmin == 'X2 ve 1.5 Üst': return 'KAZANDI' if (dep >= ev and toplam >= 2) else 'KAYBETTI'
-    if secilen_tahmin == 'Ev 1.5 Gol Üst': return 'KAZANDI' if ev >= 2 else 'KAYBETTI'
-    if secilen_tahmin == 'Dep 1.5 Gol Üst': return 'KAZANDI' if dep >= 2 else 'KAYBETTI'
-    if secilen_tahmin == 'KG Var ve 2.5 Üst': return 'KAZANDI' if (ev > 0 and dep > 0 and toplam >= 3) else 'KAYBETTI'
-    if secilen_tahmin == '1X Çifte Şans': return 'KAZANDI' if ev >= dep else 'KAYBETTI'
-    if secilen_tahmin == 'X2 Çifte Şans': return 'KAZANDI' if dep >= ev else 'KAYBETTI'
-    if secilen_tahmin == '1.5 Gol Üst': return 'KAZANDI' if toplam >= 2 else 'KAYBETTI'
-    if secilen_tahmin == '2.5 Gol Üst': return 'KAZANDI' if toplam >= 3 else 'KAYBETTI'
-    if secilen_tahmin == '2.5 Gol Alt': return 'KAZANDI' if toplam <= 2 else 'KAYBETTI'
-    if secilen_tahmin == '3.5 Gol Alt': return 'KAZANDI' if toplam <= 3 else 'KAYBETTI'
-    if secilen_tahmin == 'Karşılıklı Gol Var': return 'KAZANDI' if (ev > 0 and dep > 0) else 'KAYBETTI'
-    if secilen_tahmin == 'İlk Yarı 0.5 Üst':
+    ev_kirmizi_s = sayiya_cevir(s.get('ev_kirmizi'))
+    dep_kirmizi_s = sayiya_cevir(s.get('dep_kirmizi'))
+    has_kirmizi = (ev_kirmizi_s is not None and dep_kirmizi_s is not None)
+
+    ev_pen_sut = sayiya_cevir(s.get('ev_pen_sut'))
+    dep_pen_sut = sayiya_cevir(s.get('dep_pen_sut'))
+    ev_pen_gol = sayiya_cevir(s.get('ev_pen_gol'))
+    dep_pen_gol = sayiya_cevir(s.get('dep_pen_gol'))
+    has_pen = (ev_pen_sut is not None and dep_pen_sut is not None) or (ev_pen_gol is not None and dep_pen_gol is not None)
+    toplam_pen = int((ev_pen_sut or ev_pen_gol or 0) + (dep_pen_sut or dep_pen_gol or 0))
+
+    t = tr_kucuk(secilen_tahmin)
+
+    if t == 'maç sonu 1': return 'KAZANDI' if ev > dep else 'KAYBETTI'
+    if t == 'maç sonu 2': return 'KAZANDI' if dep > ev else 'KAYBETTI'
+    if t == 'ms 1 ve 1.5 üst': return 'KAZANDI' if (ev > dep and toplam >= 2) else 'KAYBETTI'
+    if t == 'ms 2 ve 1.5 üst': return 'KAZANDI' if (dep > ev and toplam >= 2) else 'KAYBETTI'
+    if t == '1x ve 1.5 üst': return 'KAZANDI' if (ev >= dep and toplam >= 2) else 'KAYBETTI'
+    if t == 'x2 ve 1.5 üst': return 'KAZANDI' if (dep >= ev and toplam >= 2) else 'KAYBETTI'
+    if t == 'ev 1.5 gol üst': return 'KAZANDI' if ev >= 2 else 'KAYBETTI'
+    if t == 'dep 1.5 gol üst': return 'KAZANDI' if dep >= 2 else 'KAYBETTI'
+    if t == 'kg var ve 2.5 üst': return 'KAZANDI' if (ev > 0 and dep > 0 and toplam >= 3) else 'KAYBETTI'
+    if t == '1x çifte şans': return 'KAZANDI' if ev >= dep else 'KAYBETTI'
+    if t == 'x2 çifte şans': return 'KAZANDI' if dep >= ev else 'KAYBETTI'
+    if t == '1.5 gol üst': return 'KAZANDI' if toplam >= 2 else 'KAYBETTI'
+    if t == '2.5 gol üst': return 'KAZANDI' if toplam >= 3 else 'KAYBETTI'
+    if t == '2.5 gol alt': return 'KAZANDI' if toplam <= 2 else 'KAYBETTI'
+    if t == '3.5 gol alt': return 'KAZANDI' if toplam <= 3 else 'KAYBETTI'
+    if t == 'karşılıklı gol var': return 'KAZANDI' if (ev > 0 and dep > 0) else 'KAYBETTI'
+    if t == 'ilk yarı 0.5 üst':
         return ('KAZANDI' if (ev_iy + dep_iy) >= 1 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if secilen_tahmin == 'İlk Yarı 1':
+    if t == 'ilk yarı 1':
         return ('KAZANDI' if ev_iy > dep_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if secilen_tahmin == 'İlk Yarı 2':
+    if t == 'ilk yarı 2':
         return ('KAZANDI' if dep_iy > ev_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if secilen_tahmin == '2. Yarı 1.5 Üst':
+    if t == '2. yarı 1.5 üst':
         return ('KAZANDI' if (toplam - (ev_iy + dep_iy)) >= 2 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if secilen_tahmin == '8.5 Korner Üst':
+    if t == '8.5 korner üst':
         return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 9 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
-    if secilen_tahmin == '9.5 Korner Üst':
+    if t == '9.5 korner üst':
         return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 10 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
-    if secilen_tahmin == '3.5 Kart Üst':
+    if t == '10.5 korner üst':
+        return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 11 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
+    if t in ('3.5 kart üst', '3.5 sarı kart üst'):
         return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 4 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
-    if secilen_tahmin == '4.5 Kart Üst':
+    if t in ('4.5 kart üst', '4.5 sarı kart üst'):
         return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 5 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
+    if t == 'kırmızı kart çıkar':
+        return ('KAZANDI' if (int(ev_kirmizi_s) + int(dep_kirmizi_s)) >= 1 else 'KAYBETTI') if has_kirmizi else 'BEKLIYOR'
+    if t == 'penaltı olur':
+        return ('KAZANDI' if toplam_pen >= 1 else 'KAYBETTI') if has_pen else 'BEKLIYOR'
 
     return 'BEKLIYOR'
 
@@ -140,20 +164,15 @@ def tahmin_sonuclarini_veritabanina_isle(conn):
         dict_cursor.execute("""
             SELECT t.id as tahmin_id, t.secilen_tahmin, t.sonuc as mevcut_sonuc,
                    f.durum, f.ev_skor, f.dep_skor, f.ev_iy_skor, f.dep_iy_skor,
-                   f.ev_korner, f.dep_korner, f.ev_sari, f.dep_sari
+                   f.ev_korner, f.dep_korner, f.ev_sari, f.dep_sari,
+                   f.ev_kirmizi, f.dep_kirmizi, f.ev_pen_sut, f.dep_pen_sut, f.ev_pen_gol, f.dep_pen_gol
             FROM tahminler t
             JOIN fikstur f ON f.id = t.fikstur_id
             WHERE t.secilen_tahmin IS NOT NULL
         """)
         satirlar = dict_cursor.fetchall()
         for s in satirlar:
-            hesaplanan = mac_sonucu_degerlendir(
-                s['secilen_tahmin'], s['durum'],
-                s['ev_skor'], s['dep_skor'],
-                s['ev_iy_skor'], s['dep_iy_skor'],
-                s['ev_korner'], s['dep_korner'],
-                s['ev_sari'], s['dep_sari']
-            )
+            hesaplanan = mac_sonucu_degerlendir(s['secilen_tahmin'], s)
             if hesaplanan != s['mevcut_sonuc']:
                 dict_cursor.execute("UPDATE tahminler SET sonuc = %s WHERE id = %s", (hesaplanan, s['tahmin_id']))
     except Exception as e:
@@ -263,7 +282,6 @@ def canli_motoru_baslat(conn):
         except Exception as e:
             print(f"Hata: {e}")
 
-    # Fikstür güncellendikten hemen sonra FT olan maçların tahminlerini KAZANDI / KAYBETTI olarak veritabanına işle
     tahmin_sonuclarini_veritabanina_isle(conn)
 
 if __name__ == "__main__":
