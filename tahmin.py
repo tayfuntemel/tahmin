@@ -54,10 +54,24 @@ def db_baglantisi_kur():
         p_gol_1_5_ust DECIMAL(5,2), p_gol_2_5_ust DECIMAL(5,2), p_gol_3_5_ust DECIMAL(5,2), p_kg_var DECIMAL(5,2),
         p_iy_0_5_ust DECIMAL(5,2), p_iy_1_5_ust DECIMAL(5,2),
         beklenen_korner DECIMAL(5,2), p_korner_8_5_ust DECIMAL(5,2), p_korner_9_5_ust DECIMAL(5,2),
+        beklenen_kart DECIMAL(5,2), p_kart_3_5_ust DECIMAL(5,2), p_kart_4_5_ust DECIMAL(5,2),
         UNIQUE KEY unique_fikstur (fikstur_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     """
     cursor.execute(tahminler_tablo_sql)
+
+    # Eski tabloya yeni kart sütunlarını otomatik ekle (phpMyAdmin müdahalesi gerekmez)
+    yeni_sutunlar = [
+        ("beklenen_kart", "DECIMAL(5,2) DEFAULT NULL"),
+        ("p_kart_3_5_ust", "DECIMAL(5,2) DEFAULT NULL"),
+        ("p_kart_4_5_ust", "DECIMAL(5,2) DEFAULT NULL")
+    ]
+    for sutun_adi, veri_tipi in yeni_sutunlar:
+        try:
+            cursor.execute(f"ALTER TABLE tahminler ADD COLUMN {sutun_adi} {veri_tipi}")
+        except Exception:
+            pass
+
     return conn
 
 def sayiya_cevir(deger):
@@ -82,7 +96,6 @@ def takim_performansi_getir(cursor, takim_adi, mac_tarihi, saha="genel"):
         
     maclar = cursor.fetchall()
     
-    # İç/Dış sahada 4 maçtan az veri varsa (Avrupa kupaları veya sezon başı), genel forma geri dön
     if len(maclar) < 4 and saha != "genel":
         return takim_performansi_getir(cursor, takim_adi, mac_tarihi, saha="genel")
         
@@ -93,6 +106,7 @@ def takim_performansi_getir(cursor, takim_adi, mac_tarihi, saha="genel"):
         "gol_atti": [], "gol_yedi": [], 
         "iy_gol_atti": [], "iy_gol_yedi": [], 
         "korner_atti": [], "korner_yedi": [], 
+        "kart_aldi": [], "kart_yedirdi": [],
         "kg_var": []
     }
     form_stats = {k: [] for k in stats.keys()}
@@ -114,20 +128,33 @@ def takim_performansi_getir(cursor, takim_adi, mac_tarihi, saha="genel"):
         pen_atti = sayiya_cevir(m.get('ev_pen_gol')) if is_ev else sayiya_cevir(m.get('dep_pen_gol'))
         pen_yedi = sayiya_cevir(m.get('dep_pen_gol')) if is_ev else sayiya_cevir(m.get('ev_pen_gol'))
 
-        # Gerçek gol ile Şut Kalitesini (xG) harmanla (Şans faktörünü kırar)
         efektif_attigi = attigi
         if attigi is not None and isabet_atti is not None and sut_atti is not None and sut_atti > 0:
             pen_duzeltme = (pen_atti * 0.25) if pen_atti else 0.0
             isabetsiz_atti = max(0.0, sut_atti - isabet_atti)
             sut_xg_atti = (isabet_atti * 0.29) + (isabetsiz_atti * 0.035)
-            efektif_attigi = (( max(0.0, attigi - pen_duzeltme) ) * 0.62) + (sut_xg_atti * 0.38)
+            efektif_attigi = ((max(0.0, attigi - pen_duzeltme)) * 0.62) + (sut_xg_atti * 0.38)
 
         efektif_yedigi = yedigi
         if yedigi is not None and isabet_yedi is not None and sut_yedi is not None and sut_yedi > 0:
             pen_y_duzeltme = (pen_yedi * 0.25) if pen_yedi else 0.0
             isabetsiz_yedi = max(0.0, sut_yedi - isabet_yedi)
             sut_xg_yedi = (isabet_yedi * 0.29) + (isabetsiz_yedi * 0.035)
-            efektif_yedigi = (( max(0.0, yedigi - pen_y_duzeltme) ) * 0.62) + (sut_xg_yedi * 0.38)
+            efektif_yedigi = ((max(0.0, yedigi - pen_y_duzeltme)) * 0.62) + (sut_xg_yedi * 0.38)
+
+        # Kart ve Faul Yoğunluğu Hesabı
+        sari_aldi = sayiya_cevir(m.get('ev_sari')) if is_ev else sayiya_cevir(m.get('dep_sari'))
+        sari_yedirdi = sayiya_cevir(m.get('dep_sari')) if is_ev else sayiya_cevir(m.get('ev_sari'))
+        faul_yapti = sayiya_cevir(m.get('ev_faul')) if is_ev else sayiya_cevir(m.get('dep_faul'))
+        faul_maruz = sayiya_cevir(m.get('dep_faul')) if is_ev else sayiya_cevir(m.get('ev_faul'))
+
+        efektif_kart_aldi = sari_aldi
+        if sari_aldi is not None and faul_yapti is not None and faul_yapti > 0:
+            efektif_kart_aldi = (sari_aldi * 0.70) + ((faul_yapti / 6.2) * 0.30)
+
+        efektif_kart_yedirdi = sari_yedirdi
+        if sari_yedirdi is not None and faul_maruz is not None and faul_maruz > 0:
+            efektif_kart_yedirdi = (sari_yedirdi * 0.70) + ((faul_maruz / 6.2) * 0.30)
 
         kg = 1.0 if (attigi is not None and yedigi is not None and attigi > 0 and yedigi > 0) else 0.0
 
@@ -139,6 +166,8 @@ def takim_performansi_getir(cursor, takim_adi, mac_tarihi, saha="genel"):
             if iy_yedigi is not None: dct['iy_gol_yedi'].append(iy_yedigi)
             if kor_atti is not None: dct['korner_atti'].append(kor_atti)
             if kor_yedi is not None: dct['korner_yedi'].append(kor_yedi)
+            if efektif_kart_aldi is not None: dct['kart_aldi'].append(efektif_kart_aldi)
+            if efektif_kart_yedirdi is not None: dct['kart_yedirdi'].append(efektif_kart_yedirdi)
             dct['kg_var'].append(kg)
 
     agirlikli_ort = {}
@@ -164,24 +193,22 @@ def tahminleri_hesapla_ve_kaydet(cursor, fikstur_id, ev, dep, ev_ort, dep_ort):
         cursor.execute("INSERT INTO tahminler (fikstur_id, durum) VALUES (%s, 'YETERSİZ VERİ') ON DUPLICATE KEY UPDATE durum = 'YETERSİZ VERİ'", (fikstur_id,))
         return
 
-    # Ev sahibi saha avantajı çarpanı (%4) ile xG hesabı
     ev_xG = max(0.25, ((ev_ort['gol_atti'] * 1.04) + (dep_ort['gol_yedi'] * 0.96)) / 2)
     dep_xG = max(0.20, ((dep_ort['gol_atti'] * 0.96) + (ev_ort['gol_yedi'] * 1.04)) / 2)
     
     ev_iy_xG = ((ev_ort['iy_gol_atti'] or (ev_xG * 0.44)) + (dep_ort['iy_gol_yedi'] or (dep_xG * 0.44))) / 2
     dep_iy_xG = ((dep_ort['iy_gol_atti'] or (dep_xG * 0.44)) + (ev_ort['iy_gol_yedi'] or (ev_xG * 0.44))) / 2
 
-    # 8x8 Dixon-Coles 2 Boyutlu Skor Matrisi
     p_1 = p_x = p_2 = 0.0
     p_1_5_ust = p_2_5_ust = p_3_5_ust = pois_kg_var = 0.0
     toplam_matris = 0.0
 
     for i in range(8):
         for j in range(8):
-             ham_ihtimal = poisson_ihtimal(ev_xG, i) * poisson_ihtimal(dep_xG, j)
-             dc_carpan = dixon_coles_duzeltmesi(i, j, ev_xG, dep_xG)
-             ihtimal = max(0.0, ham_ihtimal * dc_carpan)
-             toplam_matris += ihtimal
+            ham_ihtimal = poisson_ihtimal(ev_xG, i) * poisson_ihtimal(dep_xG, j)
+            dc_carpan = dixon_coles_duzeltmesi(i, j, ev_xG, dep_xG)
+            ihtimal = max(0.0, ham_ihtimal * dc_carpan)
+            toplam_matris += ihtimal
 
     for i in range(8):
         for j in range(8):
@@ -220,18 +247,25 @@ def tahminleri_hesapla_ve_kaydet(cursor, fikstur_id, ev, dep, ev_ort, dep_ort):
         p_korner_8_5 = 1.0 - sum([poisson_ihtimal(beklenen_korner, k) for k in range(9)])
         p_korner_9_5 = 1.0 - sum([poisson_ihtimal(beklenen_korner, k) for k in range(10)])
 
+    beklenen_kart, p_kart_3_5, p_kart_4_5 = None, None, None
+    if ev_ort['kart_aldi'] is not None and dep_ort['kart_yedirdi'] is not None and dep_ort['kart_aldi'] is not None and ev_ort['kart_yedirdi'] is not None:
+        beklenen_kart = ((ev_ort['kart_aldi'] + dep_ort['kart_yedirdi']) / 2) + ((dep_ort['kart_aldi'] + ev_ort['kart_yedirdi']) / 2)
+        p_kart_3_5 = 1.0 - sum([poisson_ihtimal(beklenen_kart, k) for k in range(4)])
+        p_kart_4_5 = 1.0 - sum([poisson_ihtimal(beklenen_kart, k) for k in range(5)])
+
     sql = """
         INSERT INTO tahminler 
         (fikstur_id, durum, beklenen_ev_gol, beklenen_dep_gol, p_ms_1, p_ms_x, p_ms_2, p_iy_1, p_iy_x, p_iy_2, 
          p_gol_1_5_ust, p_gol_2_5_ust, p_gol_3_5_ust, p_kg_var, p_iy_0_5_ust, p_iy_1_5_ust, 
-         beklenen_korner, p_korner_8_5_ust, p_korner_9_5_ust)
-        VALUES (%s, 'HAZIR', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         beklenen_korner, p_korner_8_5_ust, p_korner_9_5_ust, beklenen_kart, p_kart_3_5_ust, p_kart_4_5_ust)
+        VALUES (%s, 'HAZIR', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE 
             durum='HAZIR', beklenen_ev_gol=VALUES(beklenen_ev_gol), beklenen_dep_gol=VALUES(beklenen_dep_gol),
             p_ms_1=VALUES(p_ms_1), p_ms_x=VALUES(p_ms_x), p_ms_2=VALUES(p_ms_2), p_iy_1=VALUES(p_iy_1), p_iy_x=VALUES(p_iy_x), p_iy_2=VALUES(p_iy_2),
             p_gol_1_5_ust=VALUES(p_gol_1_5_ust), p_gol_2_5_ust=VALUES(p_gol_2_5_ust), p_gol_3_5_ust=VALUES(p_gol_3_5_ust), p_kg_var=VALUES(p_kg_var),
             p_iy_0_5_ust=VALUES(p_iy_0_5_ust), p_iy_1_5_ust=VALUES(p_iy_1_5_ust),
-            beklenen_korner=VALUES(beklenen_korner), p_korner_8_5_ust=VALUES(p_korner_8_5_ust), p_korner_9_5_ust=VALUES(p_korner_9_5_ust)
+            beklenen_korner=VALUES(beklenen_korner), p_korner_8_5_ust=VALUES(p_korner_8_5_ust), p_korner_9_5_ust=VALUES(p_korner_9_5_ust),
+            beklenen_kart=VALUES(beklenen_kart), p_kart_3_5_ust=VALUES(p_kart_3_5_ust), p_kart_4_5_ust=VALUES(p_kart_4_5_ust)
     """
     degerler = (
         fikstur_id, round(ev_xG, 2), round(dep_xG, 2),
@@ -239,10 +273,14 @@ def tahminleri_hesapla_ve_kaydet(cursor, fikstur_id, ev, dep, ev_ort, dep_ort):
         round(p_1_5_ust*100, 2), round(p_2_5_ust*100, 2), round(p_3_5_ust*100, 2), round(p_kg_var*100, 2),
         round(p_iy_0_5_ust*100, 2), round(p_iy_1_5_ust*100, 2),
         round(beklenen_korner, 2) if beklenen_korner is not None else None,
-        round(p_korner_8_5*100, 2) if p_korner_8_5 is not None else None, round(p_korner_9_5*100, 2) if p_korner_9_5 is not None else None
+        round(p_korner_8_5*100, 2) if p_korner_8_5 is not None else None,
+        round(p_korner_9_5*100, 2) if p_korner_9_5 is not None else None,
+        round(beklenen_kart, 2) if beklenen_kart is not None else None,
+        round(p_kart_3_5*100, 2) if p_kart_3_5 is not None else None,
+        round(p_kart_4_5*100, 2) if p_kart_4_5 is not None else None
     )
     cursor.execute(sql, degerler)
-    print(f"[{fikstur_id}] ✅ {ev} vs {dep} -> Hibrit Quant Analizi Kaydedildi!")
+    print(f"[{fikstur_id}] ✅ {ev} vs {dep} -> Hibrit Gol, Korner ve Kart Analizi Kaydedildi!")
 
 def tahmin_motorunu_baslat():
     try:
