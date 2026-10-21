@@ -426,7 +426,7 @@ def tahmin_motorunu_calistir():
     """)
 
     bugun = datetime.now()
-    hedef_tarihler = [(bugun + timedelta(days=i)).strftime("%Y-%m-%d") for i in [0, 1]]
+    hedef_tarihler = [(bugun + timedelta(days=i)).strftime("%Y-%m-%d") for i in [0, 1, 2]]
 
     for hedef_tarih in hedef_tarihler:
         print(f"\n[*] {hedef_tarih} için yüksek oranlı kombinasyon analizi başlatıldı...")
