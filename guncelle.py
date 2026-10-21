@@ -5,7 +5,7 @@ import re
 import os
 from datetime import datetime, timedelta
 
-def kütüphaneleri_kur():
+def kutuphaneleri_kur():
     gerekli = ['requests', 'pymysql']
     for k in gerekli:
         try:
@@ -13,9 +13,10 @@ def kütüphaneleri_kur():
         except ImportError:
             subprocess.check_call([sys.executable, "-m", "pip", "install", k])
 
-kütüphaneleri_kur()
+kutuphaneleri_kur()
 import requests
 import pymysql
+import pymysql.cursors
 
 HEDEF_LIGLER = [
     "ENGLISH-PREMIER-LEAGUE", "SPANISH-LALIGA", "LALIGA",
@@ -59,7 +60,7 @@ def db_baglantisi_kur():
         conn = pymysql.connect(
             host=CONFIG["db"]["host"], user=CONFIG["db"]["user"],
             password=CONFIG["db"]["password"], database=CONFIG["db"]["database"],
-            port=CONFIG["db"]["port"], autocommit=True
+            port=CONFIG["db"]["port"], charset='utf8mb4', autocommit=True
         )
         return conn
     except Exception as e:
@@ -95,6 +96,8 @@ def mac_sonucu_degerlendir(secilen_tahmin, s):
     has_iy = (ev_iy_s is not None and dep_iy_s is not None)
     ev_iy = int(ev_iy_s) if has_iy else 0
     dep_iy = int(dep_iy_s) if has_iy else 0
+    ev_2y = ev - ev_iy
+    dep_2y = dep - dep_iy
 
     ev_kor_s = sayiya_cevir(s.get('ev_korner'))
     dep_kor_s = sayiya_cevir(s.get('dep_korner'))
@@ -113,10 +116,37 @@ def mac_sonucu_degerlendir(secilen_tahmin, s):
     ev_pen_gol = sayiya_cevir(s.get('ev_pen_gol'))
     dep_pen_gol = sayiya_cevir(s.get('dep_pen_gol'))
     has_pen = (ev_pen_sut is not None and dep_pen_sut is not None) or (ev_pen_gol is not None and dep_pen_gol is not None)
-    toplam_pen = int((ev_pen_sut or ev_pen_gol or 0) + (dep_pen_sut or dep_pen_gol or 0))
+    ev_p = max(int(ev_pen_sut or 0), int(ev_pen_gol or 0))
+    dep_p = max(int(dep_pen_sut or 0), int(dep_pen_gol or 0))
+    toplam_pen = ev_p + dep_p
 
-    t = tr_kucuk(secilen_tahmin)
+    t = tr_kucuk(secilen_tahmin).strip()
 
+    # İY / MS 9 KOMBİNASYON
+    if t == 'iy/ms 1/1': return ('KAZANDI' if (ev_iy > dep_iy and ev > dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms 2/2': return ('KAZANDI' if (dep_iy > ev_iy and dep > ev) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms x/1': return ('KAZANDI' if (ev_iy == dep_iy and ev > dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms x/2': return ('KAZANDI' if (ev_iy == dep_iy and dep > ev) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms x/x': return ('KAZANDI' if (ev_iy == dep_iy and ev == dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms 1/x': return ('KAZANDI' if (ev_iy > dep_iy and ev == dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms 2/x': return ('KAZANDI' if (dep_iy > ev_iy and ev == dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms 2/1': return ('KAZANDI' if (dep_iy > ev_iy and ev > dep) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'iy/ms 1/2': return ('KAZANDI' if (ev_iy > dep_iy and dep > ev) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+
+    # YÜKSEK ORANLI KOMBOLAR
+    if t == 'iki yarıda da kg var':
+        return ('KAZANDI' if (ev_iy > 0 and dep_iy > 0 and ev_2y > 0 and dep_2y > 0) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'ilk yarı kg var':
+        return ('KAZANDI' if (ev_iy > 0 and dep_iy > 0) else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'ilk yarı 1.5 üst':
+        return ('KAZANDI' if (ev_iy + dep_iy) >= 2 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'ms 1 ve kg var': return 'KAZANDI' if (ev > dep and ev > 0 and dep > 0) else 'KAYBETTI'
+    if t == 'ms 2 ve kg var': return 'KAZANDI' if (dep > ev and ev > 0 and dep > 0) else 'KAYBETTI'
+    if t == 'ms 1 ve 2.5 üst': return 'KAZANDI' if (ev > dep and toplam >= 3) else 'KAYBETTI'
+    if t == 'ms 2 ve 2.5 üst': return 'KAZANDI' if (dep > ev and toplam >= 3) else 'KAYBETTI'
+    if t == 'kg yok': return 'KAZANDI' if (ev == 0 or dep == 0) else 'KAYBETTI'
+
+    # DİĞER MARKETLER
     if t == 'maç sonu 1': return 'KAZANDI' if ev > dep else 'KAYBETTI'
     if t == 'maç sonu 2': return 'KAZANDI' if dep > ev else 'KAYBETTI'
     if t == 'ms 1 ve 1.5 üst': return 'KAZANDI' if (ev > dep and toplam >= 2) else 'KAYBETTI'
@@ -133,28 +163,17 @@ def mac_sonucu_degerlendir(secilen_tahmin, s):
     if t == '2.5 gol alt': return 'KAZANDI' if toplam <= 2 else 'KAYBETTI'
     if t == '3.5 gol alt': return 'KAZANDI' if toplam <= 3 else 'KAYBETTI'
     if t == 'karşılıklı gol var': return 'KAZANDI' if (ev > 0 and dep > 0) else 'KAYBETTI'
-    if t == 'ilk yarı 0.5 üst':
-        return ('KAZANDI' if (ev_iy + dep_iy) >= 1 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if t == 'ilk yarı 1':
-        return ('KAZANDI' if ev_iy > dep_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if t == 'ilk yarı 2':
-        return ('KAZANDI' if dep_iy > ev_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if t == '2. yarı 1.5 üst':
-        return ('KAZANDI' if (toplam - (ev_iy + dep_iy)) >= 2 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
-    if t == '8.5 korner üst':
-        return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 9 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
-    if t == '9.5 korner üst':
-        return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 10 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
-    if t == '10.5 korner üst':
-        return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 11 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
-    if t in ('3.5 kart üst', '3.5 sarı kart üst'):
-        return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 4 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
-    if t in ('4.5 kart üst', '4.5 sarı kart üst'):
-        return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 5 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
-    if t == 'kırmızı kart çıkar':
-        return ('KAZANDI' if (int(ev_kirmizi_s) + int(dep_kirmizi_s)) >= 1 else 'KAYBETTI') if has_kirmizi else 'BEKLIYOR'
-    if t == 'penaltı olur':
-        return ('KAZANDI' if toplam_pen >= 1 else 'KAYBETTI') if has_pen else 'BEKLIYOR'
+    if t == 'ilk yarı 0.5 üst': return ('KAZANDI' if (ev_iy + dep_iy) >= 1 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'ilk yarı 1': return ('KAZANDI' if ev_iy > dep_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == 'ilk yarı 2': return ('KAZANDI' if dep_iy > ev_iy else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == '2. yarı 1.5 üst': return ('KAZANDI' if (toplam - (ev_iy + dep_iy)) >= 2 else 'KAYBETTI') if has_iy else 'BEKLIYOR'
+    if t == '8.5 korner üst': return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 9 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
+    if t == '9.5 korner üst': return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 10 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
+    if t == '10.5 korner üst': return ('KAZANDI' if (int(ev_kor_s) + int(dep_kor_s)) >= 11 else 'KAYBETTI') if has_kor else 'BEKLIYOR'
+    if t in ('3.5 kart üst', '3.5 sarı kart üst'): return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 4 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
+    if t in ('4.5 kart üst', '4.5 sarı kart üst'): return ('KAZANDI' if (int(ev_sari_s) + int(dep_sari_s)) >= 5 else 'KAYBETTI') if has_kart else 'BEKLIYOR'
+    if t == 'kırmızı kart çıkar': return ('KAZANDI' if (int(ev_kirmizi_s) + int(dep_kirmizi_s)) >= 1 else 'KAYBETTI') if has_kirmizi else 'BEKLIYOR'
+    if t == 'penaltı olur': return ('KAZANDI' if toplam_pen >= 1 else 'KAYBETTI') if has_pen else 'BEKLIYOR'
 
     return 'BEKLIYOR'
 
@@ -193,8 +212,13 @@ def canli_motoru_baslat(conn):
     sutunlar_str = ", ".join(db_sutunlar)
     degerler_str = ", ".join(["%s"] * len(db_sutunlar))
     
-    update_str_list = ["ev_skor = VALUES(ev_skor)", "dep_skor = VALUES(dep_skor)", "ev_iy_skor = VALUES(ev_iy_skor)", "dep_iy_skor = VALUES(dep_iy_skor)", "durum = VALUES(durum)"]
-    for col in db_sutunlar: update_str_list.append(f"{col} = VALUES({col})")
+    update_str_list = [
+        "ev_skor = VALUES(ev_skor)", "dep_skor = VALUES(dep_skor)",
+        "ev_iy_skor = VALUES(ev_iy_skor)", "dep_iy_skor = VALUES(dep_iy_skor)",
+        "durum = VALUES(durum)"
+    ]
+    for col in db_sutunlar:
+        update_str_list.append(f"{col} = VALUES({col})")
     update_str = ",\n        ".join(update_str_list)
     
     insert_update_sql = f"""
@@ -204,7 +228,7 @@ def canli_motoru_baslat(conn):
     """
 
     bugun = datetime.now()
-    gunler = [1, 0] 
+    gunler = [1, 0]
     
     for i in gunler:
         hedef_tarih = bugun - timedelta(days=i)
@@ -222,13 +246,15 @@ def canli_motoru_baslat(conn):
                     ham_lig = season_info.get("slug", "BILINMEYEN").upper()
                     temiz_lig = re.sub(r'^\d{4}(?:-\d{2})?-', '', ham_lig)
                     
-                    if temiz_lig not in HEDEF_LIGLER: continue 
+                    if temiz_lig not in HEDEF_LIGLER:
+                        continue
                     
                     mac_id = event["id"]
                     sezon = sezon_ayikla(season_info)
                     durum = event.get("status", {}).get("type", {}).get("shortDetail", "")
                     
-                    if "Canceled" in durum or "Postponed" in durum or durum == "": continue
+                    if "Canceled" in durum or "Postponed" in durum or durum == "":
+                        continue
                         
                     ev_sahibi, deplasman, ev_skor, dep_skor, ev_iy_skor, dep_iy_skor, ev_id, dep_id = "", "", "-", "-", "-", "-", "", ""
 
@@ -248,7 +274,7 @@ def canli_motoru_baslat(conn):
                     if "Scheduled" not in durum:
                         summary_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event={mac_id}"
                         try:
-                            time.sleep(0.2) 
+                            time.sleep(0.2)
                             sum_resp = requests.get(summary_url, timeout=10)
                             if sum_resp.status_code == 200:
                                 sum_veri = sum_resp.json()
@@ -270,7 +296,8 @@ def canli_motoru_baslat(conn):
                                                 db_isim = STAT_MAPPING[stat.get("name", "")]
                                                 if t_id == ev_id: stats[f"ev_{db_isim}"] = str(stat.get("displayValue", "-"))
                                                 elif t_id == dep_id: stats[f"dep_{db_isim}"] = str(stat.get("displayValue", "-"))
-                        except Exception: pass 
+                        except Exception:
+                            pass
 
                     veriler = [db_tarih, temiz_lig, sezon, ev_sahibi, deplasman, ev_skor, dep_skor, ev_iy_skor, dep_iy_skor, durum]
                     for db_name in STAT_MAPPING.values():
