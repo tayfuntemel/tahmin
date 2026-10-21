@@ -5,7 +5,7 @@ import re
 import os
 from datetime import datetime, timedelta
 
-def kütüphaneleri_kur():
+def kutuphaneleri_kur():
     gerekli = ['requests', 'pymysql']
     for k in gerekli:
         try:
@@ -13,11 +13,10 @@ def kütüphaneleri_kur():
         except ImportError:
             subprocess.check_call([sys.executable, "-m", "pip", "install", k])
 
-kütüphaneleri_kur()
+kutuphaneleri_kur()
 import requests
 import pymysql
 
-# ---------------------------------------------------------
 HEDEF_LIGLER = [
     "ENGLISH-PREMIER-LEAGUE", "SPANISH-LALIGA", "LALIGA",
     "GERMAN-BUNDESLIGA", "ITALIAN-SERIE-A", "FRENCH-LIGUE-1", "LIGUE-1",
@@ -25,9 +24,7 @@ HEDEF_LIGLER = [
     "PORTUGUESE-PRIMEIRA-LIGA", "PRIMEIRA-LIGA", "BRASILEIRO-SERIE-A",
     "UEFA-CHAMPIONS-LEAGUE", "CHAMPIONS-LEAGUE", "UEFA-EUROPA-LEAGUE", "EUROPA-LEAGUE"
 ]
-# ---------------------------------------------------------
 
-# GITHUB SECRETS ENTEGRASYONU
 CONFIG = {
     "db": {
         "host": os.environ.get("DB_HOST", "netscout.fun"),
@@ -56,7 +53,7 @@ def db_baglantisi_kur():
         conn = pymysql.connect(
             host=CONFIG["db"]["host"], user=CONFIG["db"]["user"],
             password=CONFIG["db"]["password"], database=CONFIG["db"]["database"],
-            port=CONFIG["db"]["port"], autocommit=True
+            port=CONFIG["db"]["port"], charset='utf8mb4', autocommit=True
         )
         return conn
     except Exception as e:
@@ -71,7 +68,7 @@ def sezon_ayikla(season_info):
 
 def gelecek_fiksturu_cek(conn):
     bugun = datetime.now()
-    gelecek_gunler = [0, 1] 
+    gelecek_gunler = [0, 1, 2]
     cursor = conn.cursor()
     
     db_sutunlar = []
@@ -94,7 +91,6 @@ def gelecek_fiksturu_cek(conn):
         hedef_tarih = bugun + timedelta(days=i)
         api_tarih = hedef_tarih.strftime("%Y%m%d")
         db_tarih = hedef_tarih.strftime("%Y-%m-%d")
-        gun_adi = "YARIN" if i == 1 else "BUGÜN"
         
         url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={api_tarih}"
         try:
@@ -107,7 +103,8 @@ def gelecek_fiksturu_cek(conn):
                     ham_lig = season_info.get("slug", "BILINMEYEN").upper()
                     temiz_lig = re.sub(r'^\d{4}(?:-\d{2})?-', '', ham_lig)
                     
-                    if temiz_lig not in HEDEF_LIGLER: continue 
+                    if temiz_lig not in HEDEF_LIGLER:
+                        continue
                     
                     sezon = sezon_ayikla(season_info)
                     durum = event.get("status", {}).get("type", {}).get("shortDetail", "")
@@ -128,7 +125,7 @@ def gelecek_fiksturu_cek(conn):
                         veriler.append(stats[f"dep_{db_name}"])
 
                     cursor.execute(insert_update_sql, tuple(veriler))
-        except Exception as e:
+        except Exception:
             pass
     print("MÜKEMMEL! Fikstür veritabanına hazırlandı.")
 
