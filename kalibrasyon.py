@@ -82,6 +82,7 @@ class CanliKalibrasyonIzleyici:
 
     def market_saglik_kontrolu(self, conn) -> Dict[str, Dict[str, object]]:
         rapor: Dict[str, Dict[str, object]] = {}
+        conn.ping(reconnect=True)
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT secilen_tahmin, COALESCE(p_kalibre, olasilik) AS p_kal, sonuc, tarih
