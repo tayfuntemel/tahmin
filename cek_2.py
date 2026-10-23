@@ -27,11 +27,11 @@ HEDEF_LIGLER = [
 
 CONFIG = {
     "db": {
-        "host": os.environ.get("DB_HOST", "netscout.fun"),
-        "user": os.environ.get("DB_USER", "netscout_veri"),
-        "password": os.environ.get("DB_PASSWORD", "i.34temel1"),
-        "database": os.environ.get("DB_NAME", "netscout_veri"),
-        "port": int(os.environ.get("DB_PORT", 3306))
+        "host": os.environ.get("DB_HOST") or "netscout.fun",
+        "user": os.environ.get("DB_USER") or "netscout_veri",
+        "password": os.environ.get("DB_PASSWORD") or "i.34temel1",
+        "database": os.environ.get("DB_NAME") or "netscout_veri",
+        "port": int(os.environ.get("DB_PORT") or 3306)
     }
 }
 
