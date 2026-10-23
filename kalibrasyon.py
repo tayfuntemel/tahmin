@@ -1,27 +1,14 @@
 # -*- coding: utf-8 -*-
-"""
-kalibrasyon.py
-- Market bazında kalibratör: Örneklem N >= 400 ise Isotonic Regression,
-  N < 400 ise Platt / Beta (Logit-Linear) Scaling.
-- SADECE geçmiş out-of-fold (OOF) tahminler üzerinde eğitilir.
-- ECE (Expected Calibration Error) ve Reliability diyagramı verisi üretir.
-- Canlı geri besleme: `tahminler` tablosundaki son 100 sonuçlanmış tahminde
-  rolling Log-Loss ve Brier izler; baz orandan kötüleşen marketi otomatik kapatır.
-"""
-
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
-from scipy.special import logit, expit
+from scipy.special import logit
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, brier_score_loss
 
 
 def ece_hesapla(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> Tuple[float, List[Dict[str, float]]]:
-    """
-    Expected Calibration Error (ECE) ve güvenilirlik (reliability) diyagramı kutularını hesaplar.
-    """
     bins = np.linspace(0.0, 1.0, n_bins + 1)
     bin_indices = np.digitize(y_prob, bins) - 1
     ece = 0.0
@@ -46,12 +33,6 @@ def ece_hesapla(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> Tup
 
 
 class MarketKalibratoru:
-    """
-    Tek bir market için OOF tahminlerini kalibre eder.
-    Overfitting'i önlemek için kalibre edilmiş olasılıkun baz orandan daha kötü
-    OOF log-loss vermesi durumunda sönümlü (temperature/shrinkage) ölçeklemeye döner.
-    """
-
     def __init__(self, market_adi: str, min_isotonic_orneklem: int = 400):
         self.market_adi = market_adi
         self.min_isotonic_orneklem = min_isotonic_orneklem
@@ -92,18 +73,10 @@ class MarketKalibratoru:
         else:
             p_cal = p
 
-        # Aşırı uç kırpma ve %10 ham olasılık stabilizasyonu (step-function sıçramalarını yumuşatır)
         return np.clip(0.85 * p_cal + 0.15 * p, 0.01, 0.99)
 
 
 class CanliKalibrasyonIzleyici:
-    """
-    Canlı Geri Besleme ve Drift Alarmı:
-    `tahminler` tablosundaki son 100 sonuçlanmış (KAZANDI/KAYBETTI) tahmini inceler.
-    Eğer rolling Log-Loss veya Brier skoru baz oran (base rate) tahmin edicisinden
-    kötüleşmişse o marketi otomatik devre dışı bırakır ve drift alarmı üretir.
-    """
-
     def __init__(self, pencere: int = 100):
         self.pencere = pencere
 
