@@ -3,6 +3,7 @@ import subprocess
 import time
 import re
 import os
+import math
 from datetime import datetime, timedelta
 
 def kutuphaneleri_kur():
@@ -68,10 +69,14 @@ def db_baglantisi_kur():
         return None
 
 def sayiya_cevir(deger):
-    if deger is None or deger == "-" or deger == "":
+    # NaN (Not a Number) ve boşluk koruması
+    if deger is None or str(deger).strip().lower() in ["", "-", "nan", "<na>"]:
         return None
     try:
-        return float(str(deger).replace("%", "").strip())
+        val = float(str(deger).replace("%", "").strip())
+        if math.isnan(val):
+            return None
+        return val
     except:
         return None
 
