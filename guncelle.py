@@ -29,11 +29,11 @@ HEDEF_LIGLER = [
 
 CONFIG = {
     "db": {
-        "host": os.environ.get("DB_HOST", "netscout.fun"),
-        "user": os.environ.get("DB_USER", "netscout_veri"),
-        "password": os.environ.get("DB_PASSWORD", "i.34temel1"),
-        "database": os.environ.get("DB_NAME", "netscout_veri"),
-        "port": int(os.environ.get("DB_PORT", 3306))
+        "host": os.environ.get("DB_HOST") or "netscout.fun",
+        "user": os.environ.get("DB_USER") or "netscout_veri",
+        "password": os.environ.get("DB_PASSWORD") or "i.34temel1",
+        "database": os.environ.get("DB_NAME") or "netscout_veri",
+        "port": int(os.environ.get("DB_PORT") or 3306)
     }
 }
 
@@ -69,11 +69,17 @@ def db_baglantisi_kur():
         return None
 
 def sayiya_cevir(deger):
-    # NaN (Not a Number) ve boşluk koruması
-    if deger is None or str(deger).strip().lower() in ["", "-", "nan", "<na>"]:
+    if deger is None:
+        return None
+    if isinstance(deger, (int, float)):
+        if math.isnan(deger):
+            return None
+        return float(deger)
+    metin = str(deger).replace("%", "").strip().lower()
+    if metin in ["", "-", "nan", "<na>", "none", "null"]:
         return None
     try:
-        val = float(str(deger).replace("%", "").strip())
+        val = float(metin)
         if math.isnan(val):
             return None
         return val
@@ -81,7 +87,7 @@ def sayiya_cevir(deger):
         return None
 
 def mac_sonucu_degerlendir(secilen_tahmin, s):
-    durum_up = str(s.get('durum') or '').upper().strip()
+    durum_up = str(s.get('durum') or s.get('durum_temiz') or '').upper().strip()
     if 'CANCELED' in durum_up or 'POSTPONED' in durum_up:
         return 'IPTAL'
     if 'FT' not in durum_up:
@@ -121,8 +127,8 @@ def mac_sonucu_degerlendir(secilen_tahmin, s):
     ev_pen_gol = sayiya_cevir(s.get('ev_pen_gol'))
     dep_pen_gol = sayiya_cevir(s.get('dep_pen_gol'))
     has_pen = (ev_pen_sut is not None and dep_pen_sut is not None) or (ev_pen_gol is not None and dep_pen_gol is not None)
-    ev_p = max(int(ev_pen_sut or 0), int(ev_pen_gol or 0))
-    dep_p = max(int(dep_pen_sut or 0), int(dep_pen_gol or 0))
+    ev_p = max(int(ev_pen_sut if ev_pen_sut is not None else 0), int(ev_pen_gol if ev_pen_gol is not None else 0))
+    dep_p = max(int(dep_pen_sut if dep_pen_sut is not None else 0), int(dep_pen_gol if dep_pen_gol is not None else 0))
     toplam_pen = ev_p + dep_p
 
     t = tr_kucuk(secilen_tahmin).strip()
