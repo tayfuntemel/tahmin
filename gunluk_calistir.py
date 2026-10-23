@@ -22,6 +22,7 @@ logger = logging.getLogger("gunluk_calistir")
 
 
 def clv_guncelle(conn) -> None:
+    conn.ping(reconnect=True)
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE `tahminler` t
@@ -38,6 +39,7 @@ def kuponu_veritabanina_yaz(conn, kupon_sonucu: dict) -> None:
         logger.info(f"Veritabanına kupon yazılmadı. Durum: {kupon_sonucu.get('durum')} - {kupon_sonucu.get('sebep')}")
         return
 
+    conn.ping(reconnect=True)
     kupon_id = f"KUP_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6].upper()}"
     stake_yuzde = float(kupon_sonucu.get("onerilen_stake_yuzde", 0.0)) / 100.0
     mod = kupon_sonucu.get("mod", "ADIL_ORAN")
@@ -71,49 +73,58 @@ def kuponu_veritabanina_yaz(conn, kupon_sonucu: dict) -> None:
 
 
 def ana_akis(haftalik_yeniden_egit: bool = False) -> dict:
+    # 1. AŞAMA: Veritabanından verileri ve canlı sağlık durumunu al, sonra bağlantıyı kapat
+    # (Böylece 3.5 dakikalık backtest sırasında bağlantı timeout'a düşmez)
     conn = db_baglantisi_al()
     try:
         sema_kontrol_ve_olustur(conn)
         clv_guncelle(conn)
-
         df_temiz = fikstur_verisini_yukle_ve_temizle(conn)
-        df_ozellik = tum_veri_icin_ozellik_uret(df_temiz)
-
-        marketler_json = "marketler.json"
-        logger.info("Walk-forward backtest ve kalibratör eğitimi çalıştırılıyor...")
-        _, kalibratorler, market_kurallari = walk_forward_backtest_calistir(df_ozellik, marketler_json)
-
         izleyici = CanliKalibrasyonIzleyici(pencere=100)
         canli_saglik = izleyici.market_saglik_kontrolu(conn)
-        for mkt, durum in canli_saglik.items():
-            if durum.get("drift_alarmi") and mkt in market_kurallari:
-                logger.warning(f"[DRIFT ALARMI] '{mkt}' marketi canlıda baz orandan kötüleşti, otomatik kapatılıyor!")
-                market_kurallari[mkt]["aktif"] = False
+    finally:
+        conn.close()
 
-        model = BirlesikQuantModel()
-        model.fit(df_ozellik)
+    # 2. AŞAMA: Ağır CPU İşlemleri (Özellik Çıkarımı, Walk-Forward Backtest, Model Eğitimi)
+    df_ozellik = tum_veri_icin_ozellik_uret(df_temiz)
 
-        bugun_str = datetime.now().strftime("%Y-%m-%d")
-        aday_maclar = df_ozellik[
-            (~df_ozellik["durum_temiz"].str.contains("FT|CANCELED|POSTPONED", na=False)) &
-            (df_ozellik["tarih"] >= pd.to_datetime(bugun_str))
-        ].copy()
+    marketler_json = "marketler.json"
+    logger.info("Walk-forward backtest ve kalibratör eğitimi çalıştırılıyor...")
+    _, kalibratorler, market_kurallari = walk_forward_backtest_calistir(df_ozellik, marketler_json)
 
-        if aday_maclar.empty:
-            sonuc = {"durum": "BUGÜN OYNAMA", "sebep": "Planlanmış (Scheduled) maç bulunamadı."}
-            print(json.dumps(sonuc, ensure_ascii=False, indent=2))
-            return sonuc
+    for mkt, durum in canli_saglik.items():
+        if durum.get("drift_alarmi") and mkt in market_kurallari:
+            logger.warning(f"[DRIFT ALARMI] '{mkt}' marketi canlıda baz orandan kötüleşti, otomatik kapatılıyor!")
+            market_kurallari[mkt]["aktif"] = False
 
-        ham_olasiliklar_df, skor_matrisleri = model.predict_proba_df(aday_maclar)
-        kalibre_df = ham_olasiliklar_df.copy()
+    model = BirlesikQuantModel()
+    model.fit(df_ozellik)
 
-        for mkt in ADAY_MARKETLER:
-            aday_maclar[f"ham_{mkt}"] = ham_olasiliklar_df[mkt].values
-            if mkt in kalibratorler:
-                kalibre_df[mkt] = kalibratorler[mkt].transform(ham_olasiliklar_df[mkt].values)
+    bugun_str = datetime.now().strftime("%Y-%m-%d")
+    aday_maclar = df_ozellik[
+        (~df_ozellik["durum_temiz"].str.contains("FT|CANCELED|POSTPONED", na=False)) &
+        (df_ozellik["tarih"] >= pd.to_datetime(bugun_str))
+    ].copy()
 
+    if aday_maclar.empty:
+        sonuc = {"durum": "BUGÜN OYNAMA", "sebep": "Planlanmış (Scheduled) maç bulunamadı."}
+        print(json.dumps(sonuc, ensure_ascii=False, indent=2))
+        return sonuc
+
+    ham_olasiliklar_df, skor_matrisleri = model.predict_proba_df(aday_maclar)
+    kalibre_df = ham_olasiliklar_df.copy()
+
+    for mkt in ADAY_MARKETLER:
+        aday_maclar[f"ham_{mkt}"] = ham_olasiliklar_df[mkt].values
+        if mkt in kalibratorler:
+            kalibre_df[mkt] = kalibratorler[mkt].transform(ham_olasiliklar_df[mkt].values)
+
+    # 3. AŞAMA: Taze veritabanı bağlantısı aç, oranları kontrol et ve kuponu DB'ye yaz
+    conn_yaz = db_baglantisi_al()
+    try:
+        conn_yaz.ping(reconnect=True)
         fids = aday_maclar["id"].astype(int).tolist()
-        mevcut_oranlar = oranlari_getir(conn, fids)
+        mevcut_oranlar = oranlari_getir(conn_yaz, fids)
 
         kupon_sonucu = gunluk_kupon_olustur(
             gunun_maclari_df=aday_maclar,
@@ -123,11 +134,11 @@ def ana_akis(haftalik_yeniden_egit: bool = False) -> dict:
             mevcut_oranlar=mevcut_oranlar
         )
 
-        kuponu_veritabanina_yaz(conn, kupon_sonucu)
+        kuponu_veritabanina_yaz(conn_yaz, kupon_sonucu)
         print(json.dumps(kupon_sonucu, ensure_ascii=False, indent=2))
         return kupon_sonucu
     finally:
-        conn.close()
+        conn_yaz.close()
 
 
 if __name__ == "__main__":
