@@ -1,11 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-veri_hazirla.py
-MariaDB şema incelemesi/oluşturulması (tahminler, oranlar),
-fikstur tablosunun sayısala çevrilmesi, sahte sıfırların (Süper Lig / Brezilya)
-temizlenmesi ve harici oran (CSV/API) entegrasyonu.
-"""
-
 import os
 import logging
 from typing import Optional, Dict, List
@@ -20,7 +13,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("veri_hazirla")
 
-# Kanonik lig eşleştirmesi (cek_2.py ve guncelle.py'deki varyasyonları birleştirir)
+CONFIG = {
+    "db": {
+        "host": os.environ.get("DB_HOST") or "netscout.fun",
+        "user": os.environ.get("DB_USER") or "netscout_veri",
+        "password": os.environ.get("DB_PASSWORD") or "i.34temel1",
+        "database": os.environ.get("DB_NAME") or "netscout_veri",
+        "port": int(os.environ.get("DB_PORT") or 3306)
+    }
+}
+
 LIG_NORMALIZASYON = {
     "ENGLISH-PREMIER-LEAGUE": "ENGLISH-PREMIER-LEAGUE",
     "SPANISH-LALIGA": "LALIGA",
@@ -55,7 +57,6 @@ SAYISAL_KOLONLAR = [
     "ev_basarili_uzak", "dep_basarili_uzak", "ev_toplam_uzak", "dep_toplam_uzak"
 ]
 
-# Süper Lig'de ESPN'in '0' olarak bastığı detaylı pas/savunma kolonları
 DETAY_PAS_SAVUNMA_KOLONLARI = [
     "ev_isabetli_pas", "dep_isabetli_pas", "ev_toplam_pas", "dep_toplam_pas",
     "ev_pas_yuzde", "dep_pas_yuzde", "ev_isabetli_orta", "dep_isabetli_orta",
@@ -67,7 +68,6 @@ DETAY_PAS_SAVUNMA_KOLONLARI = [
     "ev_toplam_uzak", "dep_toplam_uzak", "ev_ofsayt", "dep_ofsayt"
 ]
 
-# Brezilya Serie A'da komple '0' basılan tüm boxscore kolonları
 TUM_BOXSCORE_KOLONLARI = [
     c for c in SAYISAL_KOLONLAR
     if c not in ("ev_skor", "dep_skor", "ev_iy_skor", "dep_iy_skor")
@@ -75,25 +75,12 @@ TUM_BOXSCORE_KOLONLARI = [
 
 
 def db_baglantisi_al() -> pymysql.connections.Connection:
-    """Ortam değişkenlerinden MariaDB bağlantısı kurar (Koda şifre gömülmez)."""
-    host = os.environ.get("DB_HOST")
-    user = os.environ.get("DB_USER")
-    password = os.environ.get("DB_PASSWORD")
-    database = os.environ.get("DB_NAME")
-    port = int(os.environ.get("DB_PORT", "3306"))
-
-    if not all([host, user, password, database]):
-        raise EnvironmentError(
-            "Veritabanı ortam değişkenleri eksik! Lütfen DB_HOST, DB_USER, "
-            "DB_PASSWORD ve DB_NAME değişkenlerini tanımlayın."
-        )
-
     return pymysql.connect(
-        host=host,
-        user=user,
-        password=password,
-        database=database,
-        port=port,
+        host=CONFIG["db"]["host"],
+        user=CONFIG["db"]["user"],
+        password=CONFIG["db"]["password"],
+        database=CONFIG["db"]["database"],
+        port=CONFIG["db"]["port"],
         charset="utf8mb4",
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor
@@ -101,12 +88,6 @@ def db_baglantisi_al() -> pymysql.connections.Connection:
 
 
 def sema_kontrol_ve_olustur(conn: pymysql.connections.Connection) -> None:
-    """
-    İLK İŞ: `tahminler` tablosunu DESCRIBE ile inceler.
-    Yoksa guncelle.py ile %100 uyumlu olarak oluşturur.
-    Varsa eksik analitik kolonları mevcut yapıyı bozmadan ALTER TABLE ile ekler.
-    Ayrıca `oranlar` tablosunu oluşturur.
-    """
     with conn.cursor() as cur:
         cur.execute("SHOW TABLES LIKE 'tahminler'")
         tablo_var = cur.fetchone() is not None
@@ -140,8 +121,6 @@ def sema_kontrol_ve_olustur(conn: pymysql.connections.Connection) -> None:
         else:
             cur.execute("DESCRIBE `tahminler`")
             mevcut_kolonlar = {row["Field"] for row in cur.fetchall()}
-            logger.info(f"`tahminler` mevcut şeması: {sorted(mevcut_kolonlar)}")
-
             eklenecekler = {
                 "oran": "DECIMAL(6,3) DEFAULT NULL",
                 "kapanis_orani": "DECIMAL(6,3) DEFAULT NULL",
@@ -160,7 +139,6 @@ def sema_kontrol_ve_olustur(conn: pymysql.connections.Connection) -> None:
                     logger.info(f"`tahminler` tablosuna `{kol}` kolonu ekleniyor...")
                     cur.execute(f"ALTER TABLE `tahminler` ADD COLUMN `{kol}` {tip}")
 
-        # Oranlar tablosu (Elle / CSV / Odds API girişi için)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS `oranlar` (
                 `id` INT(11) NOT NULL AUTO_INCREMENT,
@@ -177,10 +155,6 @@ def sema_kontrol_ve_olustur(conn: pymysql.connections.Connection) -> None:
 
 
 def fikstur_verisini_yukle_ve_temizle(conn: pymysql.connections.Connection) -> pd.DataFrame:
-    """
-    `fikstur` tablosunu okur, VARCHAR -> Float dönüşümlerini yapar,
-    sahte sıfırları NULL'a çevirir, oran/yüzde ölçeklerini standartlaştırır.
-    """
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM `fikstur` ORDER BY `tarih` ASC, `id` ASC")
         rows = cur.fetchall()
@@ -189,53 +163,38 @@ def fikstur_verisini_yukle_ve_temizle(conn: pymysql.connections.Connection) -> p
     if df.empty:
         return df
 
-    # 1. Tarih ve Lig Normalizasyonu
     df["tarih"] = pd.to_datetime(df["tarih"], errors="coerce")
     df["lig"] = df["lig"].astype(str).str.strip().str.upper()
     df["lig"] = df["lig"].map(lambda x: LIG_NORMALIZASYON.get(x, x))
     df["sezon"] = df["sezon"].astype(str).str.strip()
     df["durum_temiz"] = df["durum"].astype(str).str.upper().str.strip()
 
-    # 2. '-' ve boş metinleri NaN yap, sayısala çevir
     for col in SAYISAL_KOLONLAR:
         if col in df.columns:
             ser = df[col].astype(str).str.replace("%", "", regex=False).str.strip()
-            ser = ser.replace({"-": np.nan, "": np.nan, "None": np.nan, "null": np.nan})
+            ser = ser.replace({"-": np.nan, "": np.nan, "None": np.nan, "null": np.nan, "nan": np.nan})
             df[col] = pd.to_numeric(ser, errors="coerce")
 
-    # 3. KRİTİK VERİ TEMİZLİĞİ 1: Brezilya Serie A vb. Komple Sıfır Boxscore Tuzağı
-    # Eğer top oynama toplamı 0 VE toplam şut 0 ise tüm boxscore istatistikleri eksiktir!
     komple_bos_mask = (
         (df["ev_top_oynama"].fillna(0) + df["dep_top_oynama"].fillna(0) == 0) &
         (df["ev_sut"].fillna(0) + df["dep_sut"].fillna(0) == 0)
     )
     bos_sayisi = int(komple_bos_mask.sum())
     if bos_sayisi > 0:
-        logger.info(
-            f"[TEMİZLİK] Skor var ama tüm istatistikleri '0' basılmış {bos_sayisi} maçta "
-            f"boxscore kolonları NaN yapıldı."
-        )
+        logger.info(f"[TEMİZLİK] Skor var ama tüm istatistikleri '0' basılmış {bos_sayisi} maçta boxscore kolonları NaN yapıldı.")
         df.loc[komple_bos_mask, TUM_BOXSCORE_KOLONLARI] = np.nan
 
-    # 4. KRİTİK VERİ TEMİZLİĞİ 2: Süper Lig Pas/Orta/Müdahale/Ofsayt '0' Tuzağı
-    # Eğer ev_toplam_pas + dep_toplam_pas == 0 ise pas ve savunma alt kırılımları eksiktir!
     pas_bos_mask = (df["ev_toplam_pas"].fillna(0) + df["dep_toplam_pas"].fillna(0) == 0)
     pas_bos_sayisi = int(pas_bos_mask.sum())
     if pas_bos_sayisi > 0:
-        logger.info(
-            f"[TEMİZLİK] Pas verisi '0' basılmış {pas_bos_sayisi} maçta (Süper Lig vb.) "
-            f"detay pas/savunma/ofsayt kolonları NaN yapıldı."
-        )
+        logger.info(f"[TEMİZLİK] Pas verisi '0' basılmış {pas_bos_sayisi} maçta detay pas/savunma/ofsayt kolonları NaN yapıldı.")
         df.loc[pas_bos_mask, DETAY_PAS_SAVUNMA_KOLONLARI] = np.nan
 
-    # 5. Yüzde ve Oran Kolonlarının Standartlaştırılması (0.0 - 1.0 aralığına)
-    # Top oynama 0-100 aralığında (örn: 49.7) -> 0.497'ye çevir
     for tk in ("ev_top_oynama", "dep_top_oynama"):
         if tk in df.columns:
             buyuk_mask = df[tk] > 1.0
             df.loc[buyuk_mask, tk] = df.loc[buyuk_mask, tk] / 100.0
 
-    # Yuvarlanmış (0.8 gibi) yüzde kolonlarını gerçek pay/paydadan hassas hesapla
     oran_ciftleri = [
         ("ev_sut_yuzde", "ev_isabetli", "ev_sut"),
         ("dep_sut_yuzde", "dep_isabetli", "dep_sut"),
@@ -253,12 +212,10 @@ def fikstur_verisini_yukle_ve_temizle(conn: pymysql.connections.Connection) -> p
         df.loc[gecerli, yuzde_kol] = (df.loc[gecerli, pay_kol] / df.loc[gecerli, payda_kol]).clip(0.0, 1.0)
         df.loc[~gecerli, yuzde_kol] = np.nan
 
-    # 6. İY Skoru Tutarlılık Kontrolü (İY skoru MS skorundan büyük olamaz)
     iy_hatali = (df["ev_iy_skor"] > df["ev_skor"]) | (df["dep_iy_skor"] > df["dep_skor"])
     if iy_hatali.any():
         df.loc[iy_hatali, ["ev_iy_skor", "dep_iy_skor"]] = np.nan
 
-    # 7. Penaltı Düzeltmesi (guncelle.py mantığıyla birebir: max(pen_sut, pen_gol))
     pen_var_mask = df["ev_pen_sut"].notna() | df["ev_pen_gol"].notna()
     df["ev_pen_etkin"] = np.where(
         pen_var_mask,
@@ -276,10 +233,6 @@ def fikstur_verisini_yukle_ve_temizle(conn: pymysql.connections.Connection) -> p
 
 
 def csv_oran_yukle(conn: pymysql.connections.Connection, csv_yolu: str) -> int:
-    """
-    Harici CSV dosyasından (`fikstur_id,secilen_tahmin,oran,kapanis_orani`)
-    oranları `oranlar` tablosuna yükler.
-    """
     if not os.path.exists(csv_yolu):
         raise FileNotFoundError(f"Oran CSV dosyası bulunamadı: {csv_yolu}")
 
@@ -307,10 +260,6 @@ def csv_oran_yukle(conn: pymysql.connections.Connection, csv_yolu: str) -> int:
 
 
 def oranlari_getir(conn: pymysql.connections.Connection, fikstur_id_listesi: List[int]) -> Dict[int, Dict[str, Dict[str, float]]]:
-    """
-    Verilen fikstur_id listesi için `oranlar` tablosundaki mevcut oranları döndürür.
-    Dönüş: {fikstur_id: {market_adi: {'oran': 1.85, 'kapanis_orani': 1.80}}}
-    """
     if not fikstur_id_listesi:
         return {}
 
